@@ -43,7 +43,10 @@ test('Windows reader locks are retried without deleting the last valid status fi
     let timer;
     try {
       await new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(Error('Reader lock setup timed out.')), 5000);
+        // Cold Windows runners can spend several seconds loading PowerShell.
+        // This bounds helper startup only; the held-lock assertions below are
+        // unchanged and still verify that the original file is never deleted.
+        timer = setTimeout(() => reject(Error('Reader lock setup timed out.')), 15000);
         reader.stdout.on('data', data => { if (data.toString().includes('LOCKED')) resolve(); });
         reader.once('error', reject);
         reader.once('exit', code => { if (code !== null) reject(Error(`Reader exited before release: ${code}`)); });
