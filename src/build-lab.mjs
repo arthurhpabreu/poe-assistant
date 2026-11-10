@@ -131,7 +131,9 @@ PLoadModule = function(name, ...)
      local requests = require('dkjson').decode(inspectFile:read('*a')); inspectFile:close()
      for _, request in ipairs(requests) do inspections[#inspections + 1] = lab.catalog(build, request) end
     end
-    finish({ ok = true, report = lab.report(build), inspections = inspections, normalizedXml = build:SaveDB('Candidate validation') })
+    local report = lab.report(build)
+    local normalizedXml = build:SaveDB('Candidate validation')
+    finish({ ok = true, report = report, inspections = inspections, normalizedXml = normalizedXml })
    end)
    if not ok then finish({ ok = false, error = tostring(failure) }) end
    launch.assistantFinished = true

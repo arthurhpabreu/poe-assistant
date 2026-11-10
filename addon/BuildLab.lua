@@ -175,19 +175,21 @@ end
 function lab.report(build)
   -- Init calculates before PoB's automatic level estimate. Settle that estimate
   -- and recalculate exactly as the first live frame does before reading output.
+  local settled = false
   for _ = 1, 3 do
-    local level = build.characterLevel
     if build.EstimatePlayerProgress then build:EstimatePlayerProgress() end
-    if build.characterLevel == level then break end
+    local level = build.characterLevel
+    wipeGlobalCache()
+    build.outputRevision = (build.outputRevision or 0) + 1
+    build.skillsTab:UpdateSocketGroups()
     build.calcsTab:BuildOutput()
+    build:RefreshStatList() -- warnings and final automatic estimate use NEW output
+    if build.characterLevel == level then settled = true; break end
   end
+  assert(settled, 'Automatic level calculation did not converge; candidate rejected.')
   local output = {}
   for key, value in pairs(build.calcsTab.mainOutput) do if type(value) == 'number' and value == value and value ~= math.huge and value ~= -math.huge then output[key] = value end end
   local warnings = {}
-  if build.controls and build.controls.warnings then build.controls.warnings.lines = {} end
-  if build.EstimatePlayerProgress then build:EstimatePlayerProgress() end
-  if build.RefreshStatList then build:RefreshStatList() end
-  if build.InsertItemWarnings then build:InsertItemWarnings() end
   for _, warning in pairs(build.controls.warnings.lines or {}) do warnings[#warnings + 1] = warning:gsub('%^%d', '') end
   local normal, ascendancy, secondary = build.spec:CountAllocNodes()
   local errors, disconnected = {}, {}

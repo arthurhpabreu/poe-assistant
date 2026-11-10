@@ -17,7 +17,7 @@ const result = await evaluateBuilds({ install, dir, snapshot: { xml }, args: { o
 const engine = path.join(dir,'engine-cache',result.fingerprint.slice(0,16));
 const autoLevel=await calculateBuild({engine,xml:xml.replace('<Build ','<Build characterLevelAutoMode="true" '),dir:path.join(dir,'auto-level')});
 assert.equal(autoLevel.report.level,1);
-assert.equal(autoLevel.report.output.Life,60,'Automatic level settlement left stale calculator values.');
+assert.equal(autoLevel.report.output.Life,57,'Automatic level settlement left stale calculator values (level-1 Witch has 14 Strength).');
 assert(autoLevel.report.validation.errors.some(error=>error.includes('automatic level')));
 const inspection = await calculateBuild({engine,xml,dir:path.join(dir,'catalog'),inspections:[{kind:'skill',query:'Arc',exact:true,details:true},{kind:'unique',query:'Blackheart',exact:true,details:true},{kind:'unique',query:'Mjölner',exact:true,details:true}]});
 assert(inspection.inspections[0].results[0].details.description);
