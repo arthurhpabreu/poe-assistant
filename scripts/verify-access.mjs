@@ -1,0 +1,22 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { runCli } from '../src/cli.mjs';
+import { readJson } from '../src/files.mjs';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const configured = await readJson(path.join(root, '.pob-helper/settings.json'), {});
+const flag = process.argv.indexOf('--provider');
+const provider = flag >= 0 ? process.argv[flag + 1] : configured.provider || 'claude';
+if (!['codex', 'claude'].includes(provider)) throw Error('Choose codex or claude.');
+const session = await readJson(path.join(root, '.pob-helper/session.json'));
+const dir = await fs.mkdtemp(path.join(session.runtime, `access-check-${provider}-`));
+const worker = path.join(dir, 'worker'); await fs.mkdir(worker);
+const source = path.join(dir, 'source.txt'), target = path.join(dir, 'verified.txt');
+const marker = crypto.randomUUID(); await fs.writeFile(source, marker);
+const settings = { ...configured, provider, access: 'full', ...(provider === configured.provider ? {} : { executable: '', model: '', effort: '' }) };
+const schema = { type: 'object', additionalProperties: false, properties: { message: { type: 'string' } }, required: ['message'] };
+const result = await runCli({ settings, schema, dir: worker, prompt: `Verify the user's requested local access using your NATIVE shell/file tools. Your only task: read the text from ${JSON.stringify(source)}, write the identical text to ${JSON.stringify(target)}, then read it back. Both files are outside your working directory. Use rtk proxy for shell commands. Do not touch any other files, do not browse, do not inspect credentials. Return JSON {"message":"Local read/write access verified"} only after the native operation succeeds. If unavailable, report the failure accurately.`, onProgress: status => console.log(`${provider}: ${status}`) });
+if (await fs.readFile(target, 'utf8').catch(() => null) !== marker) throw Error(`${provider} did not complete the native local read/write operation: ${result.message}`);
+console.log(`${provider}: native local read/write outside CLI cwd verified.`);

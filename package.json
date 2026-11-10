@@ -1,0 +1,17 @@
+{
+  "name": "pob-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Native Claude/Codex assistant for Path of Building Community Fork",
+  "scripts": {
+    "install:addon": "node scripts/install.mjs",
+    "uninstall:addon": "node scripts/install.mjs --uninstall",
+    "start": "node src/server.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "check": "node --check src/server.mjs && node --check src/agent.mjs && node --check src/cli.mjs && node --check src/process.mjs && node --check src/models.mjs && node --check src/auth.mjs && node --check scripts/install.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "dependencies": { "@xmldom/xmldom": "^0.8.11" },
+  "devDependencies": { "fengari": "^0.1.5" }
+}
