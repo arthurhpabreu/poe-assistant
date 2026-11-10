@@ -19,7 +19,7 @@ export async function runProcess(command, args, { cwd, input = '', signal, timeo
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env: { ...process.env, NO_COLOR: '1' } });
-    let stdout = '', stderr = '', buffer = '', bytes = 0, failure, termination, discardingLine = false;
+    let stdout = '', stderr = '', buffer = '', bytes = 0, failure, termination, discardingLine = false, drainTimer;
     const fail = error => { if (!failure) { failure = error; termination = terminateTree(child); } };
     const abort = () => fail(Object.assign(Error('CLI request cancelled.'), { name: 'AbortError' }));
     signal?.addEventListener('abort', abort, { once: true });
@@ -39,7 +39,13 @@ export async function runProcess(command, args, { cwd, input = '', signal, timeo
       if (buffer.length > 1_000_000) { buffer = ''; discardingLine = true; }
     });
     child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-6000); });
-    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
+    const cleanup = () => { clearTimeout(timer); clearTimeout(drainTimer); signal?.removeEventListener('abort', abort); };
+    child.once('exit', () => {
+      // A managed detached service can inherit pipe handles after its launcher
+      // exits. Drain the launcher's queued bytes, then close our pipe readers;
+      // waiting for descendants' EOF would prevent cancellation and updates.
+      drainTimer = setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy(); }, 1000);
+    });
     child.once('error', error => { cleanup(); reject(error); });
     child.once('close', async code => {
       cleanup(); if (termination) await termination;

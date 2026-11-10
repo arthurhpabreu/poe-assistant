@@ -34,7 +34,8 @@ export async function fetchEvidence(value) {
   const raw = await fetchBounded(url);
   const content = raw.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
   if (content.length < 250 || /blocked by network security|you.ve been blocked|captcha|access denied/i.test(content.slice(0, 1200))) throw Error('The source blocked access or did not provide verifiable content.');
-  return { url: url.href, fetchedAt: new Date().toISOString(), untrustedEvidence: true, content: content.slice(0, 18_000), truncated: content.length > 18_000 };
+  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/<[^>]+>/g, ' ').replaceAll('&amp;', '&').trim() || '';
+  return { url: url.href, title, fetchedAt: new Date().toISOString(), untrustedEvidence: true, content: content.slice(0, 18_000), truncated: content.length > 18_000 };
 }
 export async function searchEvidence(query) {
   if (typeof query !== 'string' || query.length > 300) throw Error('Invalid search query.');
@@ -93,7 +94,24 @@ export async function searchSource(install, args) {
     const timer = setTimeout(() => child.kill(), 15_000);
     child.stdout.on('data', data => { output += data.toString(); if (output.length > 30_000) child.kill(); });
     child.stderr.on('data', data => { error += data; });
-    child.on('error', e => { clearTimeout(timer); reject(Error(`Local search unavailable: ${e.message}`)); });
+    child.on('error', e => { clearTimeout(timer); reject(e); });
     child.on('close', code => { clearTimeout(timer); if (code > 1) reject(Error(error || 'Local search failed.')); else resolve({ scope, query: args.query, matches: output.replaceAll(install + path.sep, '').slice(0, 24_000), truncated: output.length > 24_000 }); });
+  }).catch(async error => {
+    if (error.code !== 'ENOENT') throw error;
+    const base = path.join(install, scope), matches = [];
+    const entries = await fs.readdir(base, { recursive: true, withFileTypes: true });
+    let size = 0;
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.lua') || entry.name === 'ModCache.lua') continue;
+      const file = path.join(entry.parentPath, entry.name);
+      const relative = path.relative(install, file), safe = await safeSource(install, relative);
+      const lines = (await fs.readFile(safe, 'utf8')).split(/\r?\n/); let hits = 0;
+      for (let i = 0; i < lines.length; i++) if (lines[i].toLowerCase().includes(args.query.toLowerCase())) {
+        const line = `${relative}:${i + 1}:${lines[i]}`; matches.push(line); size += line.length;
+        if (++hits >= 4 || size > 24000) break;
+      }
+      if (size > 24000) break;
+    }
+    return { scope, query: args.query, matches: matches.join('\n').slice(0,24000), truncated: size > 24000 };
   });
 }

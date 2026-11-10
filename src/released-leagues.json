@@ -1,0 +1,8 @@
+{
+  "verifiedAt": "2026-11-10T00:00:00Z",
+  "validUntil": "2026-11-13T00:00:00Z",
+  "current": "3_29",
+  "previous": "3_28",
+  "evidence": ["https://www.pathofexile.com/news", "https://www.pathofexile.com/covens", "https://www.pathofexile.com/forum/view-thread/3916773"],
+  "reason": "GGG has announced the next expansion for November 13, 2026. Fail closed on that date until release evidence and the allowed window are refreshed; an installed preview tree cannot advance the policy."
+}

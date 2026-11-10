@@ -8,6 +8,7 @@ import { detectClis } from './cli.mjs';
 import { installationVersion } from './knowledge.mjs';
 import { browserLogin, checkAuth } from './auth.mjs';
 import { modelCatalog } from './models.mjs';
+import { latestRelease, newerVersion } from './updates.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sessionArg = process.argv.indexOf('--session');
@@ -29,7 +30,8 @@ catch {
 }
 await lock.writeFile(String(process.pid));
 const defaults = { provider: 'codex', model: '', effort: '', executable: '', research: true, access: 'full' };
-let settings = { ...defaults, ...await readJson(path.join(root, '.pob-helper/settings.json'), {}) };
+const stateDir = session.state || path.join(root, '.pob-helper');
+let settings = { ...defaults, ...await readJson(path.join(stateDir, 'settings.json'), {}) };
 let ui = { protocol: 1, sessionId: session.id, messages: [], proposal: null, busy: false, status: 'Ready. Open a build and describe your goal.', settings, clis: await detectClis(), models: await modelCatalog() };
 let modelsCheckedAt = Date.now();
 const histories = new Map();
@@ -94,6 +96,18 @@ async function native(name, args, expected, signal) {
 async function handle(request) {
   if (request.sessionId !== session.id || request.protocol !== 1 || !/^[\w-]{1,100}$/.test(request.id)) throw Error('Invalid protocol or request from another session.');
   if (request.type === 'cancel') { activeController?.abort(); loginController?.abort(); return; }
+  if (request.type === 'check_update') {
+    if (ui.busy || ui.authPending) throw Error('Wait for the current request before checking addon updates.');
+    const version = (await readJson(path.join(root, 'package.json'))).version;
+    ui.status = 'Checking PoE Assistant releases...'; await publish();
+    try {
+      const release = await latestRelease();
+      ui.update = { ...release, available: newerVersion(release.version, version), installed: version };
+      ui.status = ui.update.available ? `PoE Assistant ${release.version} available. Save and close this window, then open Update PoE Assistant.` : `PoE Assistant ${version} is up to date.`;
+      ui.messages.push({ role: 'system', text: ui.status + '\n' + release.url });
+    } catch (error) { ui.status = error.message; }
+    await publish(); return;
+  }
   if (request.type === 'login' || request.type === 'auth_status') {
     if (ui.busy || ui.authPending) throw Error('Wait for or cancel the current operation first.');
     if (request.settings) await handle({ ...request, type: 'settings' });
@@ -123,7 +137,7 @@ async function handle(request) {
     for (const provider of ['codex', 'claude']) modelSelections[provider] = String(data.modelSelections?.[provider] ?? settings.modelSelections?.[provider] ?? (settings.provider === provider ? settings.model : '') ?? '').trim().slice(0, 150);
     modelSelections[data.provider] = model;
     settings = { provider: data.provider, model, modelSelections, effort: data.effort || '', executable: String(data.executable || '').slice(0, 1000), research: data.research !== false, access: data.access || settings.access || 'full' };
-    await atomicWrite(path.join(root, '.pob-helper/settings.json'), settings);
+    await atomicWrite(path.join(stateDir, 'settings.json'), settings);
     ui.settings = settings; ui.status = 'Ready. Tell me what you want to do.'; await publish(); return;
   }
   if (ui.busy || ui.authPending) throw Error('An operation is already running.');
@@ -169,13 +183,14 @@ async function handle(request) {
   const controller = new AbortController(); activeController = controller;
   try {
     await publish();
-    const result = await chat({ text: request.text, history: prior, snapshot, settings, install: session.install, dir: path.join(runtime, 'turns', request.id), signal: controller.signal, native, progress: (status, details) => { progress(status, details).catch(() => {}); } });
+    const result = await chat({ text: request.text, history: prior, snapshot, settings, install: session.install, dir: path.join(runtime, 'turns', request.id), engineDir: path.join(stateDir, 'engines'), signal: controller.signal, native, progress: (status, details) => { progress(status, details).catch(() => {}); } });
     controller.signal.throwIfAborted();
     const current = await snapshotNow({ allowStale: true });
     if (current.buildKey !== key) throw Error('You switched builds during analysis. The response was discarded.');
     const sourceText = result.sources.length ? '\n\nSources consulted:\n' + result.sources.join('\n') : '';
-    history.push({ role: 'assistant', text: result.message + sourceText });
-    if (result.candidate) ui.proposal = { title: result.proposalTitle || 'Suggested changes', xml: result.candidate, operations: result.operations, baseHash: hash(snapshot.revision || snapshot.xml), buildKey: key, fingerprint: result.version.fingerprint };
+    const validationText = result.validation ? '\n\nPoB validation: complete candidate calculated with engine ' + result.version.version + '. Compared against the unchanged baseline; ' + (result.validation.report.warnings?.length || 0) + ' calculator warning(s).' : '';
+    history.push({ role: 'assistant', text: result.message + validationText + sourceText });
+    if (result.candidate) ui.proposal = { title: result.proposalTitle || 'Suggested changes', xml: result.candidate, operations: result.operations, baseHash: hash(snapshot.revision || snapshot.xml), buildKey: key, fingerprint: result.version.fingerprint, validation: result.validation };
     ui.status = result.candidate ? 'Proposal ready. Review the changes before applying.' : 'Analysis complete.';
   } catch (error) { history.push({ role: 'system', text: controller.signal.aborted ? 'Analysis cancelled.' : error.message }); ui.status = 'See the message in the chat.'; }
   finally { activeController = null; ui.busy = false; ui.workMessage = ''; ui.lastCompletedRequest = request.id; if (activeKey === key) ui.messages = history; await publish(); }
@@ -223,8 +238,17 @@ const timer = setInterval(() => { if (ticking) return; ticking = true; tick().ca
 // The standalone entry point survives updates; never rewrite official PoB sources.
 const lifecycleTimer = setInterval(async () => {
   try {
-    if (await readJson(path.join(runtime, 'uninstalled.json'))) { await stop(); return; }
+    if (await readJson(path.join(runtime, 'uninstalled.json')) || (await readJson(path.join(runtime, 'shutdown.json')))?.sessionId === session.id) { await stop(); return; }
   } catch (error) { await reportError(error); }
 }, 4000);
-async function stop() { clearInterval(timer); clearInterval(lifecycleTimer); activeController?.abort(); loginController?.abort(); await lock.close(); await fs.rm(path.join(runtime, 'backend.lock'), { force: true }); process.exit(0); }
+let stopping = false;
+async function stop() {
+  if (stopping) return; stopping = true;
+  clearInterval(timer); clearInterval(lifecycleTimer); activeController?.abort(); loginController?.abort();
+  // Keep ownership until outstanding work has stopped; remove our path before
+  // closing its handle so an old shutdown cannot unlink a new owner's lock.
+  while (processing || ticking) await new Promise(resolve => setTimeout(resolve, 50));
+  if (await fs.readFile(path.join(runtime, 'backend.lock'), 'utf8').catch(() => '') === String(process.pid)) await fs.rm(path.join(runtime, 'backend.lock'), { force: true });
+  await lock.close(); process.exit(0);
+}
 process.on('SIGINT', stop); process.on('SIGTERM', stop);

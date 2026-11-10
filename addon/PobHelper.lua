@@ -2,6 +2,7 @@
 -- No generated Lua or shell code is accepted from the model.
 return function(main, config)
   local json = require('dkjson')
+  local lab = config.root and assert(loadfile(config.root:gsub('\\', '/') .. '/addon/BuildLab.lua'))()
   local runtime = config.runtime:gsub('\\', '/')
   local instance = tostring(os.time()) .. '-' .. tostring({}):gsub('[^%w]', '')
   local originalInit, originalFrame = main.Init, main.OnFrame
@@ -299,6 +300,7 @@ return function(main, config)
     host.controls.executable:SetPlaceholder('.exe or .js (auto-detect when empty)')
     host.controls.effort = new('DropDownControl', nil, { 0, 278, 160, 25 }, { 'CLI default', 'low', 'medium', 'high', 'xhigh', 'max' })
     host.controls.research = new('DropDownControl', nil, { 0, 342, 250, 25 }, { 'Forum / Reddit / wiki', 'Web research off' })
+    host.controls.updates = new('ButtonControl', nil, { 0, 465, 250, 25 }, 'Check addon updates', function() request('check_update') end)
     host.controls.access = new('DropDownControl', nil, { 0, 406, 250, 25 }, { 'Full machine access', 'PoB tools only' })
     host.controls.save = new('ButtonControl', nil, { 0, 450, 150, 28 }, 'Save settings', function() saveSettings(); advanced = false end)
     host.controls.login = new('ButtonControl', nil, { 0, 492, 130, 28 }, 'Sign in', function() request('login', { settings = settingsValue() }) end)
@@ -345,7 +347,11 @@ return function(main, config)
       local currentXml = build:SaveDB('Compare')
       assert((command.expectedRevision or revision(command.expectedXml)) == revision(currentXml), 'The build changed during analysis. Run a new analysis.')
       local args = command.args or {}
-      if command.name == 'tree' then
+      if command.name == 'catalog' then
+        return assert(lab, 'Build lab is unavailable.').catalog(build, args)
+      elseif command.name == 'inspect_calcs' then
+        return assert(lab, 'Build lab is unavailable.').calcs(build, args)
+      elseif command.name == 'tree' then
         local nodes = {}
         local query = tostring(args.query or ''):lower()
         for id, node in pairs(build.spec.nodes or build.spec.tree.nodes) do
@@ -543,7 +549,7 @@ return function(main, config)
     SetDrawColor(0.52, 0.59, 0.67)
     DrawString(x + 18, 89, 'LEFT', 13, 'VAR', display('PoB ' .. tostring(launch.versionNumber) .. '  |  ' .. tostring(currentBuild() and currentBuild().buildName or 'Open a build')))
     for name, control in pairs(host.controls) do
-      local configControl = name == 'executable' or name == 'effort' or name == 'research' or name == 'access' or name == 'save' or name == 'login' or name == 'authcheck'
+      local configControl = name == 'executable' or name == 'effort' or name == 'research' or name == 'access' or name == 'save' or name == 'login' or name == 'authcheck' or name == 'updates'
       local chatControl = name == 'conversation' or name == 'chatScroll' or name == 'copy' or name == 'latest' or name == 'wide' or name == 'input' or name == 'send' or name == 'clear' or name == 'apply' or name == 'details' or name == 'undo'
       control.shown = configControl and advanced or not configControl and (not chatControl or not advanced)
       control.enabled = not disabled or name == 'toggle'
@@ -579,6 +585,7 @@ return function(main, config)
     c.executable.x = x + 14; c.executable.width = width - 28
     c.effort.x = x + 14; c.research.x = x + 14; c.research.width = width - 28; c.access.x = x + 14; c.access.width = width - 28; c.save.x = x + 14
     c.login.x = x + 14; c.authcheck.x = x + 158
+    c.updates.x = x + 14; c.updates.width = width - 28; c.updates.enabled = not ui.busy and not ui.authPending and not disabled
     c.login.enabled = not ui.busy and not ui.authPending and not disabled
     c.authcheck.enabled = not ui.busy and not ui.authPending and not disabled
     updateConversation()

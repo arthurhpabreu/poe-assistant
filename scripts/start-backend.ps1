@@ -13,3 +13,14 @@ if (Test-Path -LiteralPath $heartbeat) {
 # No authentication environment/profile is modified. Only this project's backend is started.
 $arguments = @('"' + (Join-Path $config.root 'src\server.mjs') + '"', '--session', '"' + $sessionPath + '"')
 Start-Process -FilePath $config.node -ArgumentList $arguments -WorkingDirectory $config.root -WindowStyle Hidden -RedirectStandardError (Join-Path $config.runtime 'backend-error.log') -RedirectStandardOutput (Join-Path $config.runtime 'backend-output.log')
+$ready = $false
+for ($attempt = 0; $attempt -lt 100; $attempt++) {
+    Start-Sleep -Milliseconds 100
+    if (Test-Path -LiteralPath $heartbeat) {
+        try {
+            $beat = Get-Content -Raw -LiteralPath $heartbeat | ConvertFrom-Json
+            if ($beat.sessionId -eq $config.id -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $beat.time -lt 3000) { $ready = $true; break }
+        } catch { }
+    }
+}
+if (-not $ready) { throw ('Assistant did not start. See ' + (Join-Path $config.runtime 'backend-error.log')) }

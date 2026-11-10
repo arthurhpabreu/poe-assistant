@@ -5,10 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { applyOperations, parseBuild } from '../src/xml.mjs';
 import { invocation, extractClaude } from '../src/cli.mjs';
-import { scopedPath, safeSource, atomicWrite, readJson } from '../src/files.mjs';
+import { scopedPath, safeSource, atomicWrite, readJson, hash } from '../src/files.mjs';
 import { researchUrl } from '../src/knowledge.mjs';
 import { compatible, removeHook, bootstrap } from '../scripts/install.mjs';
-import { chat } from '../src/agent.mjs';
+import { chat as realChat } from '../src/agent.mjs';
+import { calculationHash } from '../src/build-lab.mjs';
+const chat = options => realChat({ evaluateCandidates: async ({ args, snapshot, version }) => ({ baseHash: hash(snapshot.xml), fingerprint: version.fingerprint, objective: 'TotalDPS', base: { output: { Life: 1000 } }, candidates: (args.candidates || [{ operations: args.operations }]).map(candidate => { const xml = applyOperations(snapshot.xml,candidate.operations); return { xmlHash: hash(xml), calculationHash: calculationHash(xml), report: { output: { Life: 1100 }, validation: { errors: [] } }, feasible: true }; }) }), ...options });
 import fengari from 'fengari';
 import { authInvocation, checkAuth, browserLogin } from '../src/auth.mjs';
 import { spawn } from 'node:child_process';
@@ -196,7 +198,7 @@ test('agent reads the complete build and uses real native tools before proposing
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pobhelper-agent-'));
   try {
     await fs.writeFile(path.join(dir, 'manifest.xml'), '<PoBVersion><Version number="2.67.2"/></PoBVersion>');
-    await fs.writeFile(path.join(dir, 'GameVersions.lua'), 'liveTargetVersion = "3_0"');
+    await fs.writeFile(path.join(dir, 'GameVersions.lua'), 'liveTargetVersion = "3_0"; treeVersionList = {"3_28","3_29"}');
     let calls = 0, evaluated = false;
     const result = await chat({
       text: 'improve this build', history: [], snapshot: { xml: build, pobVersion: '2.67.2' }, settings: { research: false }, install: dir, dir,
@@ -208,7 +210,7 @@ test('agent reads the complete build and uses real native tools before proposing
         return { message: 'Proposal', tools: [], operations: [{ type: 'set_attribute', path: 'PathOfBuilding/Build/@level', value: '91' }], sources: ['https://invented.example'], proposalTitle: 'Level' };
       },
     });
-    assert(evaluated); assert.equal(calls, 2); assert.equal(result.sources.length, 0); assert.match(result.candidate, /level="91"/);
+    assert(evaluated); assert.equal(calls, 3); assert.equal(result.sources.length, 0); assert.match(result.candidate, /level="91"/); assert(result.validation);
     await assert.rejects(chat({ text: 'x', history: [], snapshot: { xml: build, pobVersion: 'old' }, settings: {}, install: dir, dir, progress() {} }), /updated/);
     await assert.rejects(chat({ text: 'x', history: [], snapshot: { xml: build }, settings: {}, install: dir, dir, progress() {}, invoke: async () => ({ message: 'x', tools: [], operations: [{ type: 'set_text', path: 'PathOfBuilding/Notes', value: 'x' }], sources: [] }) }), /without reading/);
     await assert.rejects(chat({ text: 'x', history: [], snapshot: { xml: build }, settings: {}, install: dir, dir, progress() {}, invoke: async () => {
@@ -236,7 +238,7 @@ test('long analyses continue beyond ten rounds, archive older results and preser
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pobhelper-long-analysis-'));
   try {
     await fs.writeFile(path.join(dir, 'manifest.xml'), '<PoBVersion><Version number="2.67.2"/></PoBVersion>');
-    await fs.writeFile(path.join(dir, 'GameVersions.lua'), 'liveTargetVersion = "3_0"');
+    await fs.writeFile(path.join(dir, 'GameVersions.lua'), 'liveTargetVersion = "3_0"; treeVersionList = {"3_28","3_29"}');
     let calls = 0, nativeCalls = 0;
     const result = await chat({ text: 'create a complete physical Cyclone build', history: [], snapshot: { xml: build, pobVersion: '2.67.2' }, settings: { research: false }, install: dir, dir, progress() {},
       native: async () => ++nativeCalls === 1 ? { payload: 'A'.repeat(30000) } : { measuredLife: 1100 },
@@ -258,7 +260,7 @@ test('long analyses continue beyond ten rounds, archive older results and preser
         return { message: 'Complete build proposal.', tools: [], operations: [{ type: 'set_attribute', path: 'PathOfBuilding/Build/@level', value: '91' }], sources: [] };
       },
     });
-    assert.equal(calls, 16); assert.match(result.candidate, /level="91"/);
+    assert.equal(calls, 17); assert.match(result.candidate, /level="91"/);
     assert.equal((await readJson(path.join(dir, 'tool-results/tool-2.json'))).payload.length, 30000);
     assert.equal((await readJson(path.join(dir, 'checkpoint.json'))).workSummary.includes('physical Cyclone'), true);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
@@ -267,7 +269,7 @@ test('Cancel is respected during native tools and before accepting a final propo
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pobhelper-cancel-analysis-'));
   try {
     await fs.writeFile(path.join(dir, 'manifest.xml'), '<PoBVersion><Version number="2.67.2"/></PoBVersion>');
-    await fs.writeFile(path.join(dir, 'GameVersions.lua'), 'liveTargetVersion = "3_0"');
+    await fs.writeFile(path.join(dir, 'GameVersions.lua'), 'liveTargetVersion = "3_0"; treeVersionList = {"3_28","3_29"}');
     const base = { text: 'x', history: [], snapshot: { xml: build }, settings: {}, install: dir, dir, progress() {} };
     const nativeCancel = new AbortController();
     await assert.rejects(chat({ ...base, signal: nativeCancel.signal, invoke: async () => ({ message: '', tools: [{ name: 'tree', arguments: '{}' }], operations: [] }), native: async () => { nativeCancel.abort(); throw Error('cancel native call'); } }), error => error.name === 'AbortError');
