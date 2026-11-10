@@ -8,6 +8,18 @@ an untracked root entry point, loads the current official `Launch.lua`.
 preserving their executable target, name and icon. Arbitrary custom Lua/build
 arguments and other PoB installations are left alone. Uninstall restores the
 original arguments only when the shortcut still matches our installed version.
+Discovery searches up to four subfolder levels in the Desktop, Start menu and
+known pinned-shortcut folders without descending into reparse-point directories.
+The bound avoids walking entire source/game trees on the Desktop; the explicit
+picker accepts shortcuts at any depth or location. Discovery also maintains
+paths from prior recovery/active records. Setup's Browse picker accepts an
+explicit `.lnk` (`--shortcut` for unattended setup); an unsupported selection
+fails before staging instead of silently choosing a different shortcut.
+Saving a shortcut sends the Windows Shell an item-change notification. A final
+audit reopens all active shortcuts and verifies the executable, addon argument
+and working directory, including already-integrated shortcuts. Existing recovery
+array formats remain compatible with earlier releases; the selected/verified
+route is stored separately in `data/shortcut-verification.json`.
 
 No official PoB sources, binaries or manifest hashes are changed. Normal PoB
 restarts retain the entry point. A separate basic update runtime is redirected
@@ -31,7 +43,8 @@ release. Old addon links are backed up before removal. Builds and native PoB
 settings are never copied or overwritten. The installer is currently unsigned.
 
 Before accepting setup, `verify-native.ps1` starts an installer-owned PoB through
-an integrated shortcut. A per-process nonce selects isolated settings/build
+the explicitly selected shortcut, or a detected shortcut when none is selected.
+The selected route is remembered on later updates. A per-process nonce selects isolated settings/build
 directories and a separate bridge. A receipt is accepted only after controls
 initialize and a frame draws, with matching nonce, process ID, release and
 installation path. The native panel must cold-start its isolated bundled Node

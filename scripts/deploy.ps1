@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Source, [Parameter(Mandatory=$true)][string]$Pob, [string]$Destination, [switch]$NoShortcut, [string[]]$ShortcutRoots, [string]$Diagnostics, [string]$Invocation)
+param([Parameter(Mandatory=$true)][string]$Source, [Parameter(Mandatory=$true)][string]$Pob, [string]$Destination, [switch]$NoShortcut, [string[]]$ShortcutRoots, [string]$Diagnostics, [string]$Invocation, [string]$Shortcut)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'setup-diagnostics.ps1')
 $script:setupCleanupErrors = @()
@@ -56,6 +56,7 @@ $Source = (Resolve-Path -LiteralPath $Source).Path
 $Pob = (Resolve-Path -LiteralPath $Pob).Path; NoLinks $Pob
 if (-not $Destination) { $Destination = Join-Path $Pob 'PoEAssistant' }
 $Destination = [IO.Path]::GetFullPath($Destination).TrimEnd('\'); NoLinks $Destination
+if ($NoShortcut -and $Shortcut) { throw 'Use either -Shortcut or -NoShortcut, not both.' }
 if (-not (Test-Path -LiteralPath (Join-Path $Pob 'Path of Building.exe'))) { throw 'Select an existing Path of Building Community installation.' }
 Write-SetupPhase 'Verifying package checksums'
 $manifest = VerifyPackage $Source
@@ -66,6 +67,7 @@ $mutexHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().C
 $mutex = New-Object Threading.Mutex($false, ('Local\PoEAssistant-' + $mutexHash))
 if (-not $mutex.WaitOne(0)) { throw 'Another installation/update is in progress for this PoB.' }
 $stage = $null; $old = $null; $activated = $false; $integrationInstalled = $false; $linksChanged = $false
+$verifiedShortcut = $null; $shortcutReceipt = $null
 try {
     Write-SetupPhase 'Preparing addon data and existing shortcuts'
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
@@ -73,6 +75,14 @@ try {
     $sessionFile = Join-Path $data 'session.json'
     $linkArgs = @{Pob=$Pob;Launcher=(Join-Path $Pob 'PoEAssistant.lua');Records=(Join-Path $data 'pob-shortcuts.json')}
     if ($ShortcutRoots) { $linkArgs.Roots = $ShortcutRoots }
+    $shortcutReceiptFile = Join-Path $data 'shortcut-verification.json'
+    if (-not $NoShortcut -and -not $Shortcut -and (Test-Path -LiteralPath $shortcutReceiptFile)) {
+        $previousChoice = Get-Content -Encoding UTF8 -Raw -LiteralPath $shortcutReceiptFile | ConvertFrom-Json
+        # A deliberate selection remains required on updates. Never replace an
+        # unreadable, retargeted or customized selection with another shortcut.
+        $Shortcut = [string]$previousChoice.selectedShortcut
+    }
+    if ($Shortcut) { $Shortcut = (Get-Item -LiteralPath $Shortcut -ErrorAction Stop).FullName; $linkArgs.Shortcut = $Shortcut }
     $legacy = & (Join-Path $Source 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Inspect | ConvertFrom-Json
     # Migrate only addon-owned settings/recovery; never copy provider credentials,
     # native PoB settings/build folders, engine caches or queued commands.
@@ -130,10 +140,15 @@ try {
         if (-not $?) { throw 'Could not integrate the existing PoB shortcut.' }
         $linksChanged = $true
         $activeLinks = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $data 'active-shortcuts.json') | ConvertFrom-Json
-        $verifiedShortcut = @($activeLinks | Select-Object -First 1)[0]
+        $selectedShortcut = $Shortcut
+        $verifiedShortcut = if ($selectedShortcut) { @($activeLinks | Where-Object { $_ -ieq $selectedShortcut })[0] } else { @($activeLinks | Sort-Object | Select-Object -First 1)[0] }
         if (-not $verifiedShortcut) { throw 'No existing PoB shortcut is available for native verification.' }
         Write-SetupPhase 'Verifying the real PoB panel and backend connection'
         & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination -Shortcut $verifiedShortcut -Diagnostics $Diagnostics
+        Write-SetupPhase 'Checking every integrated PoB shortcut'
+        & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Verify
+        if (-not $?) { throw 'At least one PoB shortcut still bypasses the assistant.' }
+        $shortcutReceipt = @{schema=1;selectedShortcut=$selectedShortcut;verifiedShortcut=$verifiedShortcut;shortcuts=@($activeLinks);release=$releaseName;time=[DateTime]::UtcNow.ToString('o')}
         Write-SetupPhase 'Removing recognized legacy addon shortcuts'
         & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Cleanup
     } else {
@@ -143,9 +158,10 @@ try {
     if ($Diagnostics) {
         Write-SetupPhase 'Confirming verified installation receipt'
         $proof = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $Destination 'native-verification.json') | ConvertFrom-Json
-        if ($proof.stage -ne 'ready' -or -not $proof.backendVerified -or -not $proof.backendConnected -or $proof.release -ne $entry.releaseName -or -not $proof.nonce) { throw 'Native verification did not produce a receipt for the activated release.' }
-        AtomicJson (Join-Path $Diagnostics 'success.json') @{status='success';invocation=$Invocation;version=$manifest.version;pob=$Pob;destination=$Destination;release=$entry.releaseName;nonce=$proof.nonce;time=[DateTime]::UtcNow.ToString('o')}
+        if ($proof.stage -ne 'ready' -or -not $proof.backendVerified -or -not $proof.backendConnected -or $proof.release -ne $entry.releaseName -or -not $proof.nonce -or ($verifiedShortcut -and $proof.shortcut -ine $verifiedShortcut)) { throw 'Native verification did not produce a receipt for the activated release and shortcut.' }
+        AtomicJson (Join-Path $Diagnostics 'success.json') @{status='success';invocation=$Invocation;version=$manifest.version;pob=$Pob;destination=$Destination;release=$entry.releaseName;nonce=$proof.nonce;verifiedShortcut=$verifiedShortcut;time=[DateTime]::UtcNow.ToString('o')}
     }
+    if ($shortcutReceipt) { AtomicJson (Join-Path $data 'shortcut-verification.json') $shortcutReceipt }
     Write-SetupPhase 'Installation completed and verified'
     Write-Output ('Installed PoE Assistant ' + $manifest.version + '. Open your usual Path of Building shortcut.')
 } catch {

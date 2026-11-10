@@ -25,11 +25,20 @@ interface IPoeShellLinkW {
     void SetPath([MarshalAs(UnmanagedType.LPWStr)] string value);
 }
 public sealed class PoeAssistantShortcut : IDisposable {
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
+    static extern void SHChangeNotify(uint eventId, uint flags, [MarshalAs(UnmanagedType.LPWStr)] string item, IntPtr other);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
+    static extern uint GetLongPathName(string path, StringBuilder result, uint capacity);
+    public static string NormalizePath(string path) {
+        string full=Path.GetFullPath(path); var value=new StringBuilder(32768);
+        uint length=GetLongPathName(full,value,(uint)value.Capacity);
+        return length>0 && length<value.Capacity ? value.ToString() : full;
+    }
     readonly string file;
     object instance;
     IPoeShellLinkW link;
     PoeAssistantShortcut(string file) {
-        this.file=Path.GetFullPath(file);
+        this.file=NormalizePath(file);
         instance=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
         link=(IPoeShellLinkW)instance;
         if(File.Exists(this.file)) ((IPersistFile)instance).Load(this.file,0);
@@ -40,6 +49,13 @@ public sealed class PoeAssistantShortcut : IDisposable {
     public string WorkingDirectory { get { var value=new StringBuilder(32768); link.GetWorkingDirectory(value,value.Capacity); return value.ToString(); } set { link.SetWorkingDirectory(value); } }
     public string Description { get { var value=new StringBuilder(32768); link.GetDescription(value,value.Capacity); return value.ToString(); } set { link.SetDescription(value); } }
     public string IconLocation { set { int comma=value.LastIndexOf(','); int index=0; string icon=value; if(comma>=0 && Int32.TryParse(value.Substring(comma+1),out index)) icon=value.Substring(0,comma); link.SetIconLocation(icon,index); } }
-    public void Save() { ((IPersistFile)instance).Save(file,true); }
+    // Saving a .lnk does not itself notify Explorer's cached launch routes.
+    // PATHW + FLUSH delivers this item's change before setup reports success.
+    public void Refresh() { SHChangeNotify(0x00002000,0x00001005,file,IntPtr.Zero); }
+    public void Save() {
+        bool existed=File.Exists(file);
+        ((IPersistFile)instance).Save(file,true);
+        SHChangeNotify(existed ? 0x00002000u : 0x00000002u,0x00001005,file,IntPtr.Zero);
+    }
     public void Dispose() { if(instance!=null) { Marshal.FinalReleaseComObject(instance); instance=null; link=null; } }
 }

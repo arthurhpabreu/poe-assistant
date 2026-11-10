@@ -52,6 +52,7 @@ try {
     }
     if (-not $backendReady) { throw ('The panel rendered but PoB could not start its bundled Node backend. Diagnostics: ' + $folder) }
     $result | Add-Member -NotePropertyName backendVerified -NotePropertyValue $true
+    $result | Add-Member -NotePropertyName shortcut -NotePropertyValue $Shortcut
     $probe.WaitForExit(5000) | Out-Null
     [IO.File]::WriteAllText((Join-Path $Destination 'native-verification.json'), ($result | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
     Write-Output ('PoB verified: assistant rendered through ' + $(if ($Shortcut) { $Shortcut } else { 'its native entry point' }))

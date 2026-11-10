@@ -17,8 +17,10 @@ try {
 const source=path.join(dir,'source'),destination=path.join(pob,'PoEAssistant');
 if (await readJson(path.join(destination,'current.json'))) throw Error('Use a fresh isolated PoB fixture, not an existing addon installation.');
 const links=path.join(dir,'links'),legacy=path.join(dir,'legacy');
+const selectedFolder=path.join(dir,'User shortcuts'),selectedShortcut=path.join(selectedFolder,'My usual PoB.lnk');
+const nestedFolder=path.join(links,'Games'),nestedShortcut=path.join(nestedFolder,'Path of Building.lnk');
 const legacyState=path.join(legacy,'data'),legacyRuntime=path.join(legacyState,'sessions','pobhelper-migration-fixture');
-await fs.mkdir(path.join(legacyRuntime,'backups'),{recursive:true});await fs.mkdir(links);
+await fs.mkdir(path.join(legacyRuntime,'backups'),{recursive:true});await fs.mkdir(nestedFolder,{recursive:true});await fs.mkdir(selectedFolder);
 await atomicWrite(path.join(legacyState,'session.json'),{id:'pobhelper-migration-fixture',install:pob,state:legacyState,runtime:legacyRuntime,root:legacy,node:process.execPath});
 await atomicWrite(path.join(legacy,'current.json'),{repository:'arthurhpabreu/poe-assistant',session:path.join(legacyState,'session.json'),version:'0.2.2'});
 await atomicWrite(path.join(legacyState,'settings.json'),{provider:'codex',custom:'preserve-test'});
@@ -26,17 +28,21 @@ await fs.writeFile(path.join(legacyRuntime,'backups','migration.xml'),'<test-bac
 await fs.writeFile(path.join(legacy,'Launch.ps1'),'# owned legacy fixture');
 const literal=value=>"'"+value.replaceAll("'","''")+"'";
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command',`. ${literal(path.join(root,'scripts/shortcut-api.ps1'))}; $link=[PoeAssistantShortcut]::Open(${literal(path.join(links,'Path of Building Community.lnk'))}); $link.TargetPath=${literal(path.join(pob,'Path of Building.exe'))}; $link.WorkingDirectory=${literal(pob)}; $link.Save(); $link=[PoeAssistantShortcut]::Open(${literal(path.join(links,'PoE Assistant abcdef12.lnk'))}); $link.TargetPath=Join-Path $PSHOME 'powershell.exe'; $link.Arguments='-NoProfile -File "'+${literal(path.join(legacy,'Launch.ps1'))}+'"'; $link.Save()`]);
+await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command',`. ${literal(path.join(root,'scripts/shortcut-api.ps1'))}; foreach($file in @(${literal(selectedShortcut)},${literal(nestedShortcut)})) { $link=[PoeAssistantShortcut]::Open($file); try { $link.TargetPath=${literal(path.join(pob,'Path of Building.exe'))}; $link.Arguments='"'+${literal(path.join(pob,'Launch.lua'))}+'"'; $link.WorkingDirectory=${literal(pob)}; $link.Save() } finally { $link.Dispose() } }`]);
 const version=(await readJson(path.join(root,'package.json'))).version;
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/extract-package.ps1'),'-Archive',path.join(root,'dist',`poe-assistant-${version}-win-x64.zip`),'-Destination',source]);
 const deploy=()=>runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',source,'-Pob',pob,'-Destination',destination,'-ShortcutRoots',links],{timeoutMs:60000});
 const exeDiagnostics=path.join(dir,'exe-diagnostics');await fs.mkdir(exeDiagnostics);
-const installExe=exe=>runProcess(exe,['--silent','--pob',pob,'--no-shortcut','--diagnostics',exeDiagnostics],{timeoutMs:90000});
+const installExe=exe=>runProcess(exe,['--silent','--pob',pob,'--shortcut',selectedShortcut,'--diagnostics',exeDiagnostics],{timeoutMs:90000});
 await deploy(); const first=await readJson(path.join(destination,'current.json'));
 const session=await readJson(first.session);
 assert.equal(session.id,'pobhelper-migration-fixture');
 assert.deepEqual(await readJson(path.join(session.state,'settings.json')),{provider:'codex',custom:'preserve-test'});
 const proof=await readJson(path.join(destination,'native-verification.json'));
 assert.equal(proof.stage,'ready');assert.equal(proof.release,first.releaseName);assert(proof.processId>0 && proof.nonce && proof.backendVerified);
+assert((await readJson(path.join(session.state,'active-shortcuts.json'))).includes(nestedShortcut),'Nested shortcut was not integrated.');
+await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/verify-status-writes.ps1'),'-Pob',pob,'-ReleaseName',first.releaseName],{timeoutMs:25000});
+await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/verify-status-writes.ps1'),'-Pob',pob,'-ReleaseName',first.releaseName,'-Sustained'],{timeoutMs:25000});
 // A healthy Node process is insufficient: a broken native addon must reject
 // setup and restore the previous release/shortcut rather than claim success.
 const addonFile=path.join(source,'addon/PobHelper.lua'),originalAddon=await fs.readFile(addonFile,'utf8');
@@ -48,7 +54,7 @@ const broken=structuredClone(originalManifest);broken.files.find(f=>f.path==='ad
 // stdout/stderr capture, durable error details and native failure rollback.
 const brokenArchive=path.join(dir,'broken-native.zip'),brokenExe=path.join(dir,'broken-native.exe');
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/compress-package.ps1'),'-Source',source,'-Destination',brokenArchive],{timeoutMs:60000});
-await runProcess(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/platform:x64',`/out:${brokenExe}`,`/resource:${brokenArchive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Web.Extensions.dll',path.join(root,'scripts/Installer.cs')]);
+await runProcess(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/platform:x64',`/out:${brokenExe}`,`/resource:${brokenArchive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Web.Extensions.dll',path.join(root,'scripts/Installer.cs'),path.join(root,'scripts/WindowsShortcut.cs')]);
 await assert.rejects(installExe(brokenExe),/Deliberate native activation failure/);
 const failedDiagnostic=path.join(exeDiagnostics,(await fs.readdir(exeDiagnostics))[0]);
 assert.match((await readJson(path.join(failedDiagnostic,'failure.json'))).error,/Deliberate native activation failure/);
@@ -57,13 +63,18 @@ assert.equal(await readJson(path.join(failedDiagnostic,'success.json')),null);
 assert.equal((await readJson(path.join(destination,'current.json'))).release,first.release);
 await fs.writeFile(addonFile,originalAddon);await atomicWrite(packageManifest,originalManifest);
 assert.equal(await fs.readFile(path.join(session.runtime,'backups','migration.xml'),'utf8'),'<test-backup/>');
-assert.deepEqual(await fs.readdir(links),['Path of Building Community.lnk']);
+assert.deepEqual((await fs.readdir(links)).sort(),['Games','Path of Building Community.lnk']);
 await installExe(path.join(root,'dist',`PoE-Assistant-Setup-${version}.exe`)); const upgraded=await readJson(path.join(destination,'current.json'));
 const successDirectories=(await fs.readdir(exeDiagnostics)).filter(name=>path.join(exeDiagnostics,name)!==failedDiagnostic);
 assert.equal(successDirectories.length,1);
 const receipt=await readJson(path.join(exeDiagnostics,successDirectories[0],'success.json'));
 assert.equal(receipt.status,'success');assert.equal(receipt.version,version);assert.equal(receipt.release,upgraded.releaseName);
 assert.equal(receipt.nonce,(await readJson(path.join(destination,'native-verification.json'))).nonce);
+assert.equal(receipt.verifiedShortcut,selectedShortcut);
+assert.equal((await readJson(path.join(destination,'native-verification.json'))).shortcut,selectedShortcut);
+const shortcutProof=await readJson(path.join(session.state,'shortcut-verification.json'));
+assert.equal(shortcutProof.selectedShortcut,selectedShortcut);assert.equal(shortcutProof.verifiedShortcut,selectedShortcut);
+assert(shortcutProof.shortcuts.includes(nestedShortcut) && shortcutProof.shortcuts.includes(selectedShortcut));
 assert.equal(upgraded.previous,first.release);assert.notEqual(upgraded.release,first.release);
 assert.deepEqual(await readJson(path.join(session.state,'settings.json')),{provider:'codex',custom:'preserve-test'});
 // Simulate a trusted release whose health check fails after activation.
@@ -77,6 +88,7 @@ const beat=await readJson(path.join(session.runtime,'heartbeat.json'));assert(be
 // Corruption must fail before switching any installed code.
 await fs.appendFile(path.join(source,'addon/PobHelper.lua'),'\n-- tampered\n');await assert.rejects(deploy(),/checksum failed/);
 assert.equal((await readJson(path.join(destination,'current.json'))).release,upgraded.release);
+assert.equal((await readJson(path.join(session.state,'shortcut-verification.json'))).release,upgraded.releaseName,'Failed activation replaced the prior shortcut proof.');
 await atomicWrite(path.join(session.runtime,'shutdown.json'),{sessionId:session.id});
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(rolledBack.release,'scripts/start-backend.ps1'),'-Session',first.session],{timeoutMs:20000});
 assert.equal(await readJson(path.join(session.runtime,'shutdown.json')),null,'A deliberate stop prevented a future PoB launch.');
@@ -95,10 +107,19 @@ try {
   await fs.appendFile(restoreScript,'\nthrow Error("Deliberate rollback failure");\n');
   await assert.rejects(deploy(),error=>error.message.includes('Deliberate activation failure') && error.message.includes('Recovery incomplete'));
 } finally { await fs.writeFile(restoreScript,restoreOriginal); }
-await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',upgraded.release,'-Pob',pob,'-Destination',destination,'-ShortcutRoots',links],{timeoutMs:90000});
+const repair=()=>runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',upgraded.release,'-Pob',pob,'-Destination',destination,'-ShortcutRoots',links],{timeoutMs:90000});
+const setSelectedArguments=args=>runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command',`. ${literal(path.join(root,'scripts/shortcut-api.ps1'))}; $link=[PoeAssistantShortcut]::Open(${literal(selectedShortcut)}); try { $link.Arguments=${literal(args)}; $link.Save() } finally { $link.Dispose() }`]);
+const beforeSelectedFailure=await readJson(path.join(destination,'current.json'));
+try {
+  await setSelectedArguments('"custom.lua"');
+  await assert.rejects(repair(),/selected shortcut/i);
+  assert.equal((await readJson(path.join(destination,'current.json'))).release,beforeSelectedFailure.release,'An unsupported remembered selection switched releases.');
+} finally { await setSelectedArguments('"'+path.join(pob,'PoEAssistant.lua')+'"'); }
+await repair();
 const repaired=await readJson((await readJson(path.join(destination,'current.json'))).session);
+assert.equal((await readJson(path.join(destination,'native-verification.json'))).shortcut,selectedShortcut,'Reinstall forgot the selected shortcut outside discovery roots.');
 await atomicWrite(path.join(repaired.runtime,'shutdown.json'),{sessionId:repaired.id});
-await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,nativeRenderConfirmed:true,nativeFailureRejected:true,packagedExeFailureDiagnostic:true,packagedExeSuccessReceipt:true,directRollbackFailureReported:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
+await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,nativeRenderConfirmed:true,nativeStatusReaderLockRecovered:true,nativeFailureRejected:true,packagedExeFailureDiagnostic:true,packagedExeSuccessReceipt:true,selectedShortcutNativeVerified:true,nestedShortcutIntegrated:true,selectedShortcutRetainedOnReinstall:true,unsupportedRememberedSelectionRejected:true,directRollbackFailureReported:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
 console.log('Installer deployment, legacy settings/backups migration, shortcut reuse/cleanup, reinstall, activation rollback, corruption rejection and reopening after shutdown passed.');
 } catch(error) {
   // Only this invocation's named fixture records, never another running test's.

@@ -47,7 +47,7 @@ class Installer {
         return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(file,Encoding.UTF8));
     }
     static string Field(Dictionary<string,object> value,string key) { return value.ContainsKey(key) ? Convert.ToString(value[key]) : ""; }
-    static bool SamePath(string a,string b) { return String.Equals(Path.GetFullPath(a).TrimEnd('\\'),Path.GetFullPath(b).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase); }
+    static bool SamePath(string a,string b) { return String.Equals(PoeAssistantShortcut.NormalizePath(a).TrimEnd('\\'),PoeAssistantShortcut.NormalizePath(b).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase); }
     static string Short(string text,int length) { return text.Length>length ? text.Substring(0,length)+"..." : text; }
     static void ShowFailure(string cause,string details,string file) {
         Application.EnableVisualStyles();
@@ -66,39 +66,53 @@ class Installer {
             form.ShowDialog();
         }
     }
-    static bool SelectPob(ref string pob) {
+    static bool SelectPob(ref string pob, ref string shortcut) {
         Application.EnableVisualStyles();
         using(var form = new Form()) {
-            form.Text="Install PoE Assistant"; form.ClientSize=new System.Drawing.Size(560,235);
+            string selected=shortcut;
+            form.Text="Install PoE Assistant"; form.ClientSize=new System.Drawing.Size(560,280);
             form.FormBorderStyle=FormBorderStyle.FixedDialog; form.MaximizeBox=false; form.MinimizeBox=false; form.StartPosition=FormStartPosition.CenterScreen;
             var title = new Label { Text="Add an AI assistant to your PoB Fork", Left=22, Top=20, Width=520, Height=26, Font=new System.Drawing.Font("Segoe UI",13,System.Drawing.FontStyle.Bold) };
-            var info = new Label { Text="Install once. Keep opening Path of Building with your usual shortcut.\nNo extra shortcuts. Your builds and PoB updater are preserved.", Left=22, Top=57, Width=520, Height=42 };
+            var info = new Label { Text="Install into your existing PoB. Browse can select the shortcut you use.\nSetup repairs existing shortcuts and verifies the assistant opens.", Left=22, Top=57, Width=520, Height=42 };
             var label = new Label { Text="Path of Building installation", Left=22, Top=110, Width=440, Height=20 };
             var location = new TextBox { Text=pob, Left=22, Top=134, Width=420 };
+            var choice = new Label { Text=selected==null ? "Shortcuts: automatically find existing PoB shortcuts." : "Selected shortcut: "+selected, Left=22, Top=168, Width=516, Height=42, AutoEllipsis=true };
             var browse = new Button { Text="Browse...", Left=450, Top=132, Width=88, Height=26 };
             browse.Click += delegate {
                 using(var dialog = new OpenFileDialog()) {
-                    dialog.Title="Find Path of Building.exe"; dialog.Filter="Path of Building|Path of Building.exe";
+                    dialog.Title="Select your PoB shortcut or Path of Building.exe"; dialog.Filter="PoB executable or shortcut|Path of Building.exe;*.lnk";
+                    dialog.DereferenceLinks=false;
                     if(Directory.Exists(location.Text)) dialog.InitialDirectory=location.Text;
-                    if(dialog.ShowDialog(form)==DialogResult.OK) location.Text=Path.GetDirectoryName(dialog.FileName);
+                    if(dialog.ShowDialog(form)==DialogResult.OK) {
+                        try {
+                            string target=dialog.FileName,newSelection=null;
+                            if(String.Equals(Path.GetExtension(target),".lnk",StringComparison.OrdinalIgnoreCase)) {
+                                newSelection=PoeAssistantShortcut.NormalizePath(target);
+                                using(var link=PoeAssistantShortcut.Open(target)) target=link.TargetPath;
+                            }
+                            if(!String.Equals(Path.GetFileName(target),"Path of Building.exe",StringComparison.OrdinalIgnoreCase) || !File.Exists(target)) throw new Exception("Select a shortcut that opens Path of Building.exe, or that executable itself.");
+                            location.Text=Path.GetDirectoryName(target); selected=newSelection;
+                            choice.Text=selected==null ? "Shortcuts: automatically find existing PoB shortcuts." : "Selected shortcut: "+selected;
+                        } catch(Exception error) { MessageBox.Show(form,error.Message,"Select PoB"); }
+                    }
                 }
             };
-            var install = new Button { Text="Install", Left=344, Top=183, Width=94, Height=30 };
+            var install = new Button { Text="Install", Left=344, Top=228, Width=94, Height=30 };
             install.Click += delegate {
                 if(!File.Exists(Path.Combine(location.Text,"Path of Building.exe"))) { MessageBox.Show(form,"Select the folder containing Path of Building.exe.","Find PoB Fork"); return; }
                 form.DialogResult=DialogResult.OK;
             };
-            var cancel = new Button { Text="Cancel", Left=448, Top=183, Width=90, Height=30, DialogResult=DialogResult.Cancel };
-            form.Controls.AddRange(new Control[]{title,info,label,location,browse,install,cancel}); form.AcceptButton=install; form.CancelButton=cancel;
+            var cancel = new Button { Text="Cancel", Left=448, Top=228, Width=90, Height=30, DialogResult=DialogResult.Cancel };
+            form.Controls.AddRange(new Control[]{title,info,label,location,choice,browse,install,cancel}); form.AcceptButton=install; form.CancelButton=cancel;
             if(form.ShowDialog()!=DialogResult.OK) return false;
-            pob=location.Text; return true;
+            pob=location.Text; shortcut=selected; return true;
         }
     }
     static string Quote(string text) { if(text.Contains("\"") || text.EndsWith("\\")) throw new Exception("Invalid installer argument."); return "\"" + text + "\""; }
     [STAThread] static int Main(string[] args) {
         string invocation=Guid.NewGuid().ToString("N");
         string temporary = Path.Combine(Path.GetTempPath(), "PoEAssistantInstall-" + invocation);
-        string diagnostics=null,log=null,version="unknown",phase="Preparing setup",pob=null,destination=null;
+        string diagnostics=null,log=null,version="unknown",phase="Preparing setup",pob=null,destination=null,shortcut=null,verifiedShortcut=null;
         string processDetails="";
         bool silent = Array.IndexOf(args, "--silent") >= 0;
         try {
@@ -109,14 +123,18 @@ class Installer {
                 if(args[i] == "--pob" && i+1<args.Length) pob=args[++i];
                 else if(args[i] == "--destination" && i+1<args.Length) destination=args[++i];
                 else if(args[i] == "--diagnostics" && i+1<args.Length) diagnosticRoot=args[++i];
+                else if(args[i] == "--shortcut" && i+1<args.Length) shortcut=args[++i];
             }
-            if(!silent && !SelectPob(ref pob)) return 0;
+            if(noShortcut && shortcut!=null) throw new Exception("Use either --shortcut or --no-shortcut, not both.");
+            if(!silent && !SelectPob(ref pob,ref shortcut)) return 0;
             diagnostics=Path.Combine(Path.GetFullPath(diagnosticRoot),"PoEAssistant-setup-"+invocation);
             Directory.CreateDirectory(diagnostics); log=Path.Combine(diagnostics,"setup.log");
             pob=Path.GetFullPath(pob).TrimEnd('\\');
             if(destination==null) destination=Path.Combine(pob,"PoEAssistant");
             destination=Path.GetFullPath(destination).TrimEnd('\\');
+            if(shortcut!=null) shortcut=PoeAssistantShortcut.NormalizePath(shortcut);
             Append(log,"Invocation: "+invocation+"\r\nPoB: "+pob+"\r\nDestination: "+destination+"\r\nWindows: "+Environment.OSVersion+"\r\n64-bit OS: "+Environment.Is64BitOperatingSystem+"\r\nStarted UTC: "+DateTime.UtcNow.ToString("o")+"\r\n");
+            if(shortcut!=null) Append(log,"Selected shortcut: "+shortcut+"\r\n");
             if(!File.Exists(Path.Combine(pob,"Path of Building.exe"))) throw new Exception("Path of Building Community executable was not found.");
             phase="Extracting package";
             Directory.CreateDirectory(temporary);
@@ -137,7 +155,7 @@ class Installer {
             version=Field(Json(Path.Combine(temporary,"package.json")),"version");
             Append(log,"Version: "+version+"\r\n"); phase="Starting Windows installer script";
             string powershell=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell","v1.0","powershell.exe");
-            var start=new ProcessStartInfo(powershell, "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(Path.Combine(temporary,"scripts","setup-entry.ps1")) + " -Source " + Quote(temporary) + " -Pob " + Quote(pob) + " -Destination " + Quote(destination) + " -Diagnostics " + Quote(diagnostics) + " -Invocation " + Quote(invocation) + (noShortcut ? " -NoShortcut" : ""));
+            var start=new ProcessStartInfo(powershell, "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(Path.Combine(temporary,"scripts","setup-entry.ps1")) + " -Source " + Quote(temporary) + " -Pob " + Quote(pob) + " -Destination " + Quote(destination) + " -Diagnostics " + Quote(diagnostics) + " -Invocation " + Quote(invocation) + (noShortcut ? " -NoShortcut" : "") + (shortcut==null ? "" : " -Shortcut "+Quote(shortcut)));
             start.UseShellExecute=false; start.CreateNoWindow=true; start.RedirectStandardOutput=true; start.RedirectStandardError=true;
             start.StandardOutputEncoding=Encoding.UTF8; start.StandardErrorEncoding=Encoding.UTF8;
             using(var process=Process.Start(start)) {
@@ -161,8 +179,11 @@ class Installer {
                 if(!File.Exists(receiptFile)) throw new Exception("The installer exited without confirming activation. No verified installation receipt was returned.");
                 var receipt=Json(receiptFile);
                 if(Field(receipt,"invocation")!=invocation || Field(receipt,"version")!=version || Field(receipt,"status")!="success" || !SamePath(Field(receipt,"pob"),pob) || !SamePath(Field(receipt,"destination"),destination) || String.IsNullOrEmpty(Field(receipt,"nonce")) || String.IsNullOrEmpty(Field(receipt,"release"))) throw new Exception("The installation receipt does not match this setup invocation.");
+                verifiedShortcut=Field(receipt,"verifiedShortcut");
+                if(!noShortcut && String.IsNullOrEmpty(verifiedShortcut)) throw new Exception("Setup did not identify a verified PoB shortcut.");
+                if(shortcut!=null && !SamePath(shortcut,verifiedShortcut)) throw new Exception("Setup did not verify the selected PoB shortcut.");
             }
-            if(!silent) MessageBox.Show("Installed and verified in your PoB Fork.\n\nSetup opened an isolated PoB check and confirmed the assistant rendered.\nOpen your usual Path of Building shortcut. Maximize PoB to see the full chat.","PoE Assistant");
+            if(!silent) MessageBox.Show("Installed and verified in your PoB Fork.\n\nSetup confirmed the assistant rendered and connected.\n"+(String.IsNullOrEmpty(verifiedShortcut) ? "" : "Open this PoB shortcut:\n"+verifiedShortcut+"\n\n")+"Maximize PoB to see the full chat.","PoE Assistant");
             return 0;
         } catch(Exception error) {
             if(log==null) log=Path.Combine(Path.GetTempPath(),"PoEAssistant-setup-error-"+invocation+".txt");

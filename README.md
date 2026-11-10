@@ -33,13 +33,16 @@ your open build, including unsaved changes, and uses your own **Codex CLI** or
 ## Install in three steps
 
 1. **Save and close PoB.** Have [Path of Building Community Fork](https://github.com/PathOfBuildingCommunity/PathOfBuilding/releases) and either [Codex CLI](https://developers.openai.com/codex/cli) or [Claude Code](https://code.claude.com/docs/en/overview) installed.
-2. **Run the installer from [Releases](https://github.com/arthurhpabreu/poe-assistant/releases/latest).** It detects the usual PoB folder; use Browse if yours is elsewhere, then click Install. Node.js is included.
+2. **Run the installer from [Releases](https://github.com/arthurhpabreu/poe-assistant/releases/latest).** It detects the usual PoB folder. Browse can select **your existing PoB shortcut** or `Path of Building.exe`; then click Install. Node.js is included.
 3. **Open your usual Path of Building shortcut.** Open a build, choose your CLI/model in the panel, and start chatting. Settings → Sign in uses your provider's official login if needed.
 
 <p align="center"><img src="docs/images/installer.png" alt="Single-window installer: select your existing PoB folder and click Install" width="650"></p>
 
 The addon lives in **`<your PoB folder>\PoEAssistant`**. Setup integrates with
 existing standard PoB shortcuts and removes recognized old addon shortcuts.
+It also searches subfolders on the Desktop and in the Start menu. If your
+shortcut is somewhere else, select it with **Browse**: setup repairs and tests
+that exact shortcut, and remembers it for future updates.
 It creates one ordinary PoB shortcut only if none exists. There are no separate
 assistant, update, rollback or uninstall desktop shortcuts.
 
@@ -48,9 +51,11 @@ installer updates an existing installation and migrates recognized older addon
 settings/recovery data automatically. **Settings → Check addon updates** shows
 the latest release. Save/close PoB and run the new installer to update.
 
-Setup opens an isolated check through the integrated PoB shortcut and only
+Setup opens an isolated check through the selected or detected PoB shortcut and only
 reports success after the native assistant renders a frame and connects to its
-own freshly started backend. The check uses
+own freshly started backend. It then rechecks every integrated shortcut's
+executable, addon argument and working directory, and shows the verified shortcut
+path when finished. The check uses
 temporary settings and does not open your saved builds. Startup errors are
 shown in setup instead of leaving an apparently successful installation.
 

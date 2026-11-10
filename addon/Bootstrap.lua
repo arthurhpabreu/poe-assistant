@@ -3,6 +3,7 @@
 -- the UTF-8 absolute paths returned by the native host.
 return function(destination)
   local json = require('dkjson')
+  local replaceFile
   local function read(file)
     local stream, failure = io.open(file, 'rb'); assert(stream, failure)
     local text = stream:read('*a'); stream:close()
@@ -11,7 +12,8 @@ return function(destination)
   local function write(file, value)
     local stream, failure = io.open(file .. '.tmp', 'wb'); assert(stream, failure)
     assert(stream:write(json.encode(value))); stream:close()
-    os.remove(file); assert(os.rename(file .. '.tmp', file))
+    if replaceFile then assert(replaceFile(file .. '.tmp', file))
+    else os.remove(file); assert(os.rename(file .. '.tmp', file)) end
   end
   local base = GetScriptPath():gsub('\\', '/'):gsub('/$', '')
   local current = read(destination .. '/current.json')
@@ -26,7 +28,7 @@ return function(destination)
   config.runtime = destination .. '/data/sessions/' .. config.id
   config.node = config.root .. '/runtime/node.exe'
   config.backendEntry = config.root .. '/src/launch-backend.mjs'
-  config.launchProcess = assert(loadfile(relativeRoot .. '/addon/WindowsProcess.lua'))()
+  config.launchProcess, replaceFile = assert(loadfile(relativeRoot .. '/addon/WindowsProcess.lua'))()
   config.sessionFile = config.state .. '/session.json'
   -- Verify the actual bridge directory, not only Node's ability to read it.
   local check = config.runtime .. '/native-write-check.tmp'

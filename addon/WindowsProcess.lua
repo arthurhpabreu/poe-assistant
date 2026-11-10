@@ -15,6 +15,8 @@ int __stdcall MultiByteToWideChar(unsigned int, unsigned long, const char*, int,
 int __stdcall CreateProcessW(const wchar_t*, wchar_t*, void*, void*, int, unsigned long, void*, const wchar_t*, PoeAssistantStartupInfoW*, PoeAssistantProcessInfo*);
 int __stdcall CloseHandle(void*);
 unsigned long __stdcall GetLastError(void);
+int __stdcall MoveFileExA(const char*, const char*, unsigned long);
+void __stdcall Sleep(unsigned long);
 ]]
 local kernel = ffi.load('kernel32')
 local function wide(text)
@@ -24,7 +26,7 @@ local function wide(text)
   assert(kernel.MultiByteToWideChar(65001, 8, text, #text, buffer, count) > 0, 'Could not convert startup path')
   return buffer
 end
-return function(executable, arguments)
+local function launch(executable, arguments)
   local info = ffi.new('PoeAssistantStartupInfoW'); info.cb = ffi.sizeof(info)
   local process = ffi.new('PoeAssistantProcessInfo')
   local command = wide('"' .. executable .. '" ' .. arguments)
@@ -34,3 +36,17 @@ return function(executable, arguments)
   kernel.CloseHandle(process.hThread); kernel.CloseHandle(process.hProcess)
   return pid
 end
+local function replaceFile(source, destination)
+  -- Lua uses ASCII paths relative to the native Unicode working directory.
+  -- Replacing the file preserves the previous valid report while a Windows
+  -- reader briefly holds it open; delete-then-rename can lose that report.
+  local failure
+  for attempt = 1, 11 do
+    if kernel.MoveFileExA(source, destination, 9) ~= 0 then return true end
+    failure = tonumber(kernel.GetLastError())
+    if failure ~= 5 and failure ~= 32 and failure ~= 33 then break end
+    if attempt < 11 then kernel.Sleep(20) end
+  end
+  return nil, 'Windows could not replace the assistant status file (error ' .. tostring(failure) .. '): ' .. destination
+end
+return launch, replaceFile

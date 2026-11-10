@@ -17,7 +17,7 @@ test('real setup EXE preserves partial errors with retained pipes and requires a
     await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:'0.0.0'}));
     await fs.writeFile(path.join(scripts,'holder.mjs'),`import fs from 'node:fs'; fs.writeFileSync(process.argv[2],String(process.pid)); setTimeout(()=>{},20000);`);
     await fs.writeFile(path.join(scripts,'deploy.ps1'),`
-param($Source,$Pob,$Destination,$Diagnostics,$Invocation,[switch]$NoShortcut)
+param($Source,$Pob,$Destination,$Diagnostics,$Invocation,[switch]$NoShortcut,$Shortcut)
 Write-SetupPhase 'Fixture deployment'
 switch (Split-Path -Leaf $Pob) {
   'holding-pipes' {
@@ -39,19 +39,21 @@ switch (Split-Path -Leaf $Pob) {
     }
   }
   default {
-    $receipt=@{status='success';invocation=$Invocation;version='0.0.0';pob=$Pob;destination=$Destination;release='fixture';nonce='fresh-fixture'}
+    $receipt=@{status='success';invocation=$Invocation;version='0.0.0';pob=$Pob;destination=$Destination;release='fixture';nonce='fresh-fixture';verifiedShortcut=(Join-Path $Pob 'Verified.lnk')}
     if ((Split-Path -Leaf $Pob) -eq 'wrong-receipt') { $receipt.invocation='another-invocation' }
+    if ((Split-Path -Leaf $Pob) -eq 'missing-shortcut-receipt') { $receipt.Remove('verifiedShortcut') }
     [IO.File]::WriteAllText((Join-Path $Diagnostics 'success.json'),($receipt|ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
   }
 }
 `);
     const archive=path.join(dir,'payload.zip'),exe=path.join(dir,'Setup.exe');
     await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.resolve('scripts/compress-package.ps1'),'-Source',source,'-Destination',archive]);
-    await runProcess(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/platform:x64',`/out:${exe}`,`/resource:${archive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Web.Extensions.dll',path.resolve('scripts/Installer.cs')]);
-    for(const mode of ['holding-pipes','exit-zero','wrong-receipt','primary-and-rollback','success']) await t.test(mode,async()=>{
+    await runProcess(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/platform:x64',`/out:${exe}`,`/resource:${archive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Web.Extensions.dll',path.resolve('scripts/Installer.cs'),path.resolve('scripts/WindowsShortcut.cs')]);
+    for(const mode of ['holding-pipes','exit-zero','wrong-receipt','missing-shortcut-receipt','wrong-shortcut-receipt','primary-and-rollback','success']) await t.test(mode,async()=>{
       const pob=path.join(dir,mode);await fs.mkdir(pob);await fs.writeFile(path.join(pob,'Path of Building.exe'),'owned fixture');
       const before=await fs.readdir(logs),started=Date.now();
-      const operation=runProcess(exe,['--silent','--pob',pob,'--diagnostics',logs],{timeoutMs:10000});
+      const selection=mode==='wrong-shortcut-receipt' ? ['--shortcut',path.join(pob,'Chosen.lnk')] : [];
+      const operation=runProcess(exe,['--silent','--pob',pob,'--diagnostics',logs,...selection],{timeoutMs:10000});
       if(mode==='success') await operation;else await assert.rejects(operation);
       const added=(await fs.readdir(logs)).filter(name=>!before.includes(name));assert.equal(added.length,1);
       const diagnostic=path.join(logs,added[0]);
@@ -66,6 +68,8 @@ switch (Split-Path -Leaf $Pob) {
         process.kill(holderPid);holderPid=null;
       } else if(mode==='exit-zero') assert(log.includes('No verified installation receipt'),log);
       else if(mode==='wrong-receipt') assert(log.includes('does not match this setup invocation'),log);
+      else if(mode==='missing-shortcut-receipt') assert(log.includes('did not identify a verified PoB shortcut'),log);
+      else if(mode==='wrong-shortcut-receipt') assert(log.includes('did not verify the selected PoB shortcut'),log);
       else if(mode==='primary-and-rollback') {
         const failure=await readJson(path.join(diagnostic,'failure.json'));
         assert.equal(failure.error,'Original activation failed');assert.equal(failure.phase,'Fixture deployment');
