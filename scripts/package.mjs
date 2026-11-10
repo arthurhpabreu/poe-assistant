@@ -25,13 +25,13 @@ for(const entry of entries.filter(e=>e.isFile())) {
   files.push({path:path.relative(stage,file).replaceAll('\\','/'),sha256:hash(await fs.readFile(file))});
 }
 files.sort((a,b)=>a.path.localeCompare(b.path));
-await atomicWrite(path.join(stage,'release-manifest.json'),{repository:'autis-analytics/poe-assistant',version:pkg.version,node:process.version,files});
+await atomicWrite(path.join(stage,'release-manifest.json'),{repository:'arthurhpabreu/poe-assistant',version:pkg.version,node:process.version,files});
 const archive=path.join(dist,`poe-assistant-${pkg.version}-win-x64.zip`);
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/compress-package.ps1'),'-Source',stage,'-Destination',archive],{cwd:root,timeoutMs:180000});
 const executable=path.join(dist,`PoE-Assistant-Setup-${pkg.version}.exe`);
 const compiler=path.join(process.env.WINDIR,'Microsoft.NET','Framework64','v4.0.30319','csc.exe');
 await runProcess(compiler,['/nologo','/target:winexe','/platform:x64',`/out:${executable}`,`/resource:${archive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll',path.join(root,'scripts','Installer.cs')],{cwd:root,timeoutMs:180000});
-await atomicWrite(path.join(dist,'SHA256SUMS.json'),{repository:'autis-analytics/poe-assistant',version:pkg.version,files:[archive,executable].map(file=>({name:path.basename(file),sha256:null}))});
+await atomicWrite(path.join(dist,'SHA256SUMS.json'),{repository:'arthurhpabreu/poe-assistant',version:pkg.version,files:[archive,executable].map(file=>({name:path.basename(file),sha256:null}))});
 const sums=JSON.parse(await fs.readFile(path.join(dist,'SHA256SUMS.json'),'utf8'));
 for (const file of sums.files) file.sha256=hash(await fs.readFile(path.join(dist,file.name)));
 await atomicWrite(path.join(dist,'SHA256SUMS.json'),sums);

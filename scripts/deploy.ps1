@@ -17,7 +17,7 @@ function NoLinks([string]$Path) {
 function VerifyPackage([string]$Folder) {
     NoLinks $Folder
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $Folder 'release-manifest.json') | ConvertFrom-Json
-    if ($manifest.repository -ne 'autis-analytics/poe-assistant' -or $manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Unexpected release identity/version.' }
+    if ($manifest.repository -ne 'arthurhpabreu/poe-assistant' -or $manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Unexpected release identity/version.' }
     $known = @{}
     foreach ($entry in $manifest.files) {
         if ($entry.path -match '(^|[\\/])\.\.([\\/]|$)|:|^[/\\]' -or $entry.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid package entry.' }
@@ -84,7 +84,7 @@ try {
     $integrationInstalled = $true
     $session = Get-Content -Raw -LiteralPath $sessionFile | ConvertFrom-Json
     Remove-Item -LiteralPath (Join-Path $session.runtime 'shutdown.json') -Force -ErrorAction SilentlyContinue
-    $entry = @{version=$manifest.version;release=$stage;session=$sessionFile;previous=$old.release;repository='autis-analytics/poe-assistant'}
+    $entry = @{version=$manifest.version;release=$stage;session=$sessionFile;previous=$old.release;repository='arthurhpabreu/poe-assistant'}
     foreach ($name in @('Launch','Update','Uninstall','Rollback')) {
         Copy-Item -LiteralPath (Join-Path $stage ('scripts/installed-' + $name.ToLowerInvariant() + '.ps1')) -Destination (Join-Path $Destination ($name + '.ps1')) -Force
     }

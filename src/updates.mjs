@@ -1,5 +1,5 @@
 import { runProcess } from './process.mjs';
-export const repository = 'autis-analytics/poe-assistant';
+export const repository = 'arthurhpabreu/poe-assistant';
 export async function latestRelease({ signal } = {}) {
   let release;
   try { release = JSON.parse(await runProcess('gh.exe',['api','--hostname','github.com',`repos/${repository}/releases/latest`],{signal,timeoutMs:20000})); }
