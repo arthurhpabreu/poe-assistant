@@ -158,7 +158,7 @@ async function handle(request) {
     try {
       const release = await latestRelease();
       ui.update = { ...release, available: newerVersion(release.version, version), installed: version };
-      ui.status = ui.update.available ? `PoE Assistant ${release.version} available. Save and close this window, then open Update PoE Assistant.` : `PoE Assistant ${version} is up to date.`;
+      ui.status = ui.update.available ? `PoE Assistant ${release.version} available. Download its installer from the release link, save and close PoB, then run setup. Keep using your usual PoB shortcut.` : `PoE Assistant ${version} is up to date.`;
       ui.messages.push({ role: 'system', text: ui.status + '\n' + release.url });
     } catch (error) { ui.status = error.message; }
     await publish(); return;
@@ -249,7 +249,8 @@ async function handle(request) {
   const controller = new AbortController(); activeController = controller;
   try {
     await publish();
-    const result = await chat({ text: request.text, history: prior, snapshot, settings, install: session.install, dir: path.join(runtime, 'turns', request.id), engineDir: path.join(stateDir, 'engines'), signal: controller.signal, native, progress: (status, details) => { progress(status, details).catch(() => {}); } });
+    const engineDir = session.direct && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'PoEAssistantCache', hash(session.install + session.id).slice(0, 12)) : path.join(stateDir, 'engines');
+    const result = await chat({ text: request.text, history: prior, snapshot, settings, install: session.install, dir: path.join(runtime, 'turns', request.id), engineDir, signal: controller.signal, native, progress: (status, details) => { progress(status, details).catch(() => {}); } });
     controller.signal.throwIfAborted();
     const current = await snapshotNow({ allowStale: true });
     if (current.buildKey !== key) throw Error('You switched builds during analysis. The response was discarded.');

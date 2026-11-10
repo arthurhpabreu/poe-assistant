@@ -11,6 +11,10 @@ const arg=process.argv.indexOf('--destination');
 if(arg<0 || !process.argv[arg+1]) throw Error('Specify the managed installation destination.');
 const destination=await fs.realpath(process.argv[arg+1]);
 const current=await readJson(path.join(destination,'current.json'));
+if (current?.direct) {
+  if (!/^[\w.-]+$/.test(current.releaseName || '')) throw Error('Invalid release directory.');
+  current.release=path.join(destination,'releases',current.releaseName); current.session=path.join(destination,'data/session.json');
+}
 if(current?.repository!==repository || !current.session) throw Error('Unexpected managed installation.');
 const latest=await latestRelease();
 if(!newerVersion(latest.version,current.version)) { console.log(`PoE Assistant ${current.version} is up to date.`); process.exit(0); }
@@ -34,7 +38,7 @@ try {
   const extracted=path.join(dir,'package');
   await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/extract-package.ps1'),'-Archive',path.join(dir,name),'-Destination',extracted],{cwd:dir,timeoutMs:180000});
   await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',extracted,'-Pob',session.install,'-Destination',destination],{cwd:dir,timeoutMs:180000});
-  console.log(`Updated to PoE Assistant ${latest.version}. Reopen your shortcut.`);
+  console.log(`Updated to PoE Assistant ${latest.version}. Open your usual Path of Building shortcut.`);
 } finally {
   if(path.dirname(dir)!==path.join(destination,'data','updates')) throw Error('Invalid update cleanup path.');
   await fs.rm(dir,{recursive:true,force:true});

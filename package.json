@@ -1,6 +1,8 @@
 {
   "name": "poe-assistant",
-  "version": "0.2.2",
+  "version": "0.3.0",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/arthurhpabreu/poe-assistant.git" },
   "private": true,
   "type": "module",
   "description": "Native Claude/Codex assistant for Path of Building Community Fork",

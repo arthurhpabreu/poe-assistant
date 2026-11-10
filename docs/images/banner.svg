@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="350" viewBox="0 0 1280 350" role="img" aria-labelledby="title desc">
+<title id="title">PoE Assistant</title><desc id="desc">Build with evidence. An AI companion inside Path of Building.</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101923"/><stop offset="1" stop-color="#090d12"/></linearGradient><radialGradient id="glow"><stop stop-color="#284b45" stop-opacity=".5"/><stop offset="1" stop-color="#0d131a" stop-opacity="0"/></radialGradient></defs>
+<rect width="1280" height="350" rx="20" fill="url(#bg)"/>
+<ellipse cx="1030" cy="170" rx="360" ry="260" fill="url(#glow)"/>
+<g stroke="#506357" stroke-width="2" opacity=".65"><path d="M920 65 1030 135 1180 80M1030 135 1130 230 1230 180M1030 135 900 250 1130 230M900 250 830 155 920 65M1130 230 1180 80" fill="none"/></g>
+<g fill="#151e25" stroke="#d3b678" stroke-width="3"><circle cx="920" cy="65" r="10"/><circle cx="1180" cy="80" r="10"/><circle cx="1230" cy="180" r="10"/><circle cx="900" cy="250" r="10"/><circle cx="830" cy="155" r="10"/></g>
+<circle cx="1030" cy="135" r="26" fill="#162f2a" stroke="#64c5a4" stroke-width="3"/><path d="m1018 135 8 8 16-17" stroke="#75d5b4" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="1130" cy="230" r="17" fill="#25251e" stroke="#d3b678" stroke-width="3"/>
+<g font-family="Segoe UI,Arial,sans-serif"><text x="62" y="77" fill="#64c5a4" font-size="15" letter-spacing="3">PATH OF BUILDING COMMUNITY FORK ADDON</text><text x="60" y="155" fill="#e8edf1" font-size="66" font-weight="700">PoE Assistant</text><text x="64" y="210" fill="#d3b678" font-size="30">Build with evidence.</text><text x="64" y="252" fill="#aebbc7" font-size="21">Your skill. Your mechanics. Your PoB numbers.</text><rect x="64" y="282" width="319" height="30" rx="15" fill="#152922"/><text x="82" y="302" fill="#93d8bc" font-size="14">INSPECT   /   MEASURE   /   REVIEW   /   APPLY</text></g></svg>

@@ -7,29 +7,48 @@ using System.Windows.Forms;
 using System.Collections.Generic;
 
 class Installer {
+    static bool SelectPob(ref string pob) {
+        Application.EnableVisualStyles();
+        using(var form = new Form()) {
+            form.Text="Install PoE Assistant"; form.ClientSize=new System.Drawing.Size(560,235);
+            form.FormBorderStyle=FormBorderStyle.FixedDialog; form.MaximizeBox=false; form.MinimizeBox=false; form.StartPosition=FormStartPosition.CenterScreen;
+            var title = new Label { Text="Add an AI assistant to your PoB Fork", Left=22, Top=20, Width=520, Height=26, Font=new System.Drawing.Font("Segoe UI",13,System.Drawing.FontStyle.Bold) };
+            var info = new Label { Text="Install once. Keep opening Path of Building with your usual shortcut.\nNo extra shortcuts. Your builds and PoB updater are preserved.", Left=22, Top=57, Width=520, Height=42 };
+            var label = new Label { Text="Path of Building installation", Left=22, Top=110, Width=440, Height=20 };
+            var location = new TextBox { Text=pob, Left=22, Top=134, Width=420 };
+            var browse = new Button { Text="Browse...", Left=450, Top=132, Width=88, Height=26 };
+            browse.Click += delegate {
+                using(var dialog = new OpenFileDialog()) {
+                    dialog.Title="Find Path of Building.exe"; dialog.Filter="Path of Building|Path of Building.exe";
+                    if(Directory.Exists(location.Text)) dialog.InitialDirectory=location.Text;
+                    if(dialog.ShowDialog(form)==DialogResult.OK) location.Text=Path.GetDirectoryName(dialog.FileName);
+                }
+            };
+            var install = new Button { Text="Install", Left=344, Top=183, Width=94, Height=30 };
+            install.Click += delegate {
+                if(!File.Exists(Path.Combine(location.Text,"Path of Building.exe"))) { MessageBox.Show(form,"Select the folder containing Path of Building.exe.","Find PoB Fork"); return; }
+                form.DialogResult=DialogResult.OK;
+            };
+            var cancel = new Button { Text="Cancel", Left=448, Top=183, Width=90, Height=30, DialogResult=DialogResult.Cancel };
+            form.Controls.AddRange(new Control[]{title,info,label,location,browse,install,cancel}); form.AcceptButton=install; form.CancelButton=cancel;
+            if(form.ShowDialog()!=DialogResult.OK) return false;
+            pob=location.Text; return true;
+        }
+    }
     static string Quote(string text) { if(text.Contains("\"") || text.EndsWith("\\")) throw new Exception("Invalid installer argument."); return "\"" + text + "\""; }
     [STAThread] static int Main(string[] args) {
         string temporary = Path.Combine(Path.GetTempPath(), "PoEAssistantInstall-" + Guid.NewGuid().ToString("N"));
         bool silent = Array.IndexOf(args, "--silent") >= 0;
         try {
             string pob = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Path of Building Community");
-            string destination = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoE Assistant");
+            string destination = null;
             bool noShortcut = Array.IndexOf(args, "--no-shortcut") >= 0;
             for(int i=0;i<args.Length;i++) {
                 if(args[i] == "--pob" && i+1<args.Length) pob=args[++i];
                 else if(args[i] == "--destination" && i+1<args.Length) destination=args[++i];
             }
-            if(!silent) {
-                Application.EnableVisualStyles();
-                using(var dialog = new OpenFileDialog()) {
-                    dialog.Title="Select your Path of Building Community executable";
-                    dialog.Filter="Path of Building|Path of Building.exe";
-                    if(Directory.Exists(pob)) dialog.InitialDirectory=pob;
-                    if(dialog.ShowDialog() != DialogResult.OK) return 0;
-                    pob=Path.GetDirectoryName(dialog.FileName);
-                }
-                if(MessageBox.Show("Install PoE Assistant in:\n" + destination + "\n\nPoB: " + pob + "\n\nYour official PoB updater and builds are preserved.", "PoE Assistant Setup", MessageBoxButtons.OKCancel) != DialogResult.OK) return 0;
-            }
+            if(!silent && !SelectPob(ref pob)) return 0;
+            if(destination==null) destination=Path.Combine(pob,"PoEAssistant");
             if(!File.Exists(Path.Combine(pob,"Path of Building.exe"))) throw new Exception("Path of Building Community executable was not found.");
             Directory.CreateDirectory(temporary);
             string prefix=Path.GetFullPath(temporary)+Path.DirectorySeparatorChar;
@@ -61,7 +80,7 @@ class Installer {
                     throw new Exception(error.Length>0 ? error : output.Length>0 ? output : "Installation failed. No successful activation was confirmed.");
                 }
             }
-            if(!silent) MessageBox.Show("Installed. Open the PoE Assistant shortcut. Use Update PoE Assistant for independent addon updates.","PoE Assistant");
+            if(!silent) MessageBox.Show("Installed inside PoB Fork.\n\nOpen your usual Path of Building shortcut. The assistant appears on the right.\nPrevious addon shortcuts have been removed.","PoE Assistant");
             return 0;
         } catch(Exception error) {
             string log=Path.Combine(Path.GetTempPath(),"PoEAssistant-setup-error-"+Guid.NewGuid().ToString("N")+".txt");
