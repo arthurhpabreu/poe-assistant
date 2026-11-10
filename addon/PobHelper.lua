@@ -4,6 +4,7 @@ return function(main, config)
   local json = require('dkjson')
   local labRoot = config.luaRoot or config.root
   local lab = labRoot and assert(loadfile(labRoot:gsub('\\', '/') .. '/addon/BuildLab.lua'))()
+  local new = lab and lab.new or new
   local runtime = config.runtime:gsub('\\', '/')
   local instance = tostring(os.time()) .. '-' .. tostring({}):gsub('[^%w]', '')
   local originalInit, originalFrame = main.Init, main.OnFrame
@@ -478,7 +479,7 @@ return function(main, config)
   end
   main.Init = function(self, ...)
     originalInit(self, ...)
-    local ready, initError = pcall(initializeControls)
+    local ready, initError = xpcall(initializeControls, debug.traceback)
     if not ready then host = nil; reportStartup('failed', { error = tostring(initError) }); ConPrintf('PoB Helper disabled: %s', tostring(initError)); return end
     buildKey = instance .. '-0'
     local build = self.modes.BUILD

@@ -1,5 +1,24 @@
 -- Read-only access to the CURRENT PoB data and calculator. No generated Lua.
 local lab = {}
+local nativeNew = new
+-- PoB supports both automatic constructors and explicit :ClassName(...)
+-- constructors. Keep compatibility local to the addon; never replace globals
+-- or retry a constructor that has already started running.
+function lab.new(className, ...)
+  local classes = assert(common and common.classes, 'PoB class registry is unavailable.')
+  if not classes[className] then LoadModule('Classes/' .. className) end
+  local class = assert(classes[className], 'PoB class is unavailable: ' .. className)
+  if rawget(class, '_unconstructedMeta') or not rawget(class, '_constructor') and type(rawget(class, className)) == 'function' then
+    local object = nativeNew(className)
+    local constructor = object[className] -- transitions PoB's unconstructed guard
+    assert(type(constructor) == 'function', 'PoB constructor is unavailable: ' .. className)
+    constructor(object, ...)
+    return object
+  end
+  assert(type(rawget(class, '_constructor')) == 'function', 'Unsupported PoB constructor: ' .. className)
+  return nativeNew(className, ...)
+end
+local new = lab.new
 local function scalar(value, depth, seen)
   if type(value) == 'number' then return value == value and value ~= math.huge and value ~= -math.huge and value or nil end
   if type(value) == 'string' or type(value) == 'boolean' then return value end

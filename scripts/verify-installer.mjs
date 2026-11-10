@@ -13,6 +13,7 @@ if(arg<0)throw Error('Use --pob with an isolated test PoB; this test changes onl
 const pob=await fs.realpath(process.argv[arg+1]);
 const dir=path.join(root,'.pob-helper','installer-check-'+crypto.randomUUID().slice(0,8));
 await fs.mkdir(dir,{recursive:true});
+try {
 const source=path.join(dir,'source'),destination=path.join(pob,'PoEAssistant');
 if (await readJson(path.join(destination,'current.json'))) throw Error('Use a fresh isolated PoB fixture, not an existing addon installation.');
 const links=path.join(dir,'links'),legacy=path.join(dir,'legacy');
@@ -82,8 +83,9 @@ assert.equal(await readJson(path.join(session.runtime,'shutdown.json')),null,'A 
 const reopened=await readJson(path.join(session.runtime,'heartbeat.json'));assert(reopened?.pid>0 && Date.now()-reopened.time<5000);
 await atomicWrite(path.join(session.runtime,'shutdown.json'),{sessionId:session.id});
 const xml='<PathOfBuilding><Build level="1" characterLevelAutoMode="false" targetVersion="3_0" className="Scion" ascendClassName="None"/><Tree activeSpec="1"><Spec treeVersion="3_29" classId="0" ascendClassId="0" nodes=""/></Tree><Items/><Skills/><Config/><Notes/></PathOfBuilding>';
-const calculated=await calculateBuild({engine:pob,xml,dir:path.join(pob,'requests','installation-verification')});
+const calculated=await calculateBuild({engine:pob,xml,dir:path.join(pob,'requests','installation-verification'),inspections:[{kind:'unique',query:'Blackheart',exact:true,details:true}]});
 assert.equal(calculated.report.level,1);assert.equal(calculated.report.output.Life,60);assert.equal(calculated.report.validation.errors.length,0);
+assert(calculated.inspections[0].results[0].itemText.includes('Blackheart'),'The real worker did not construct the current unique item.');
 // A direct script caller without -Diagnostics must still see both causes when
 // activation and restoration fail. The previous immutable fixture is repaired
 // in finally, then its verified release is installed again through deployment.
@@ -98,3 +100,13 @@ const repaired=await readJson((await readJson(path.join(destination,'current.jso
 await atomicWrite(path.join(repaired.runtime,'shutdown.json'),{sessionId:repaired.id});
 await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,nativeRenderConfirmed:true,nativeFailureRejected:true,packagedExeFailureDiagnostic:true,packagedExeSuccessReceipt:true,directRollbackFailureReported:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
 console.log('Installer deployment, legacy settings/backups migration, shortcut reuse/cleanup, reinstall, activation rollback, corruption rejection and reopening after shutdown passed.');
+} catch(error) {
+  // Only this invocation's named fixture records, never another running test's.
+  const diagnostics=path.join(dir,'exe-diagnostics');
+  for(const name of await fs.readdir(diagnostics).catch(()=>[])) {
+    const file=path.join(diagnostics,name,'failure.json');
+    const text=await fs.readFile(file,'utf8').catch(()=>null);
+    if(text) console.error(text.slice(-65536));
+  }
+  throw error;
+}

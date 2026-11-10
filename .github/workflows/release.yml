@@ -23,6 +23,9 @@ jobs:
       - name: Verify clean Windows and native PoB startup
         shell: pwsh
         run: ./scripts/verify-clean-windows.ps1
+      - name: Verify explicit constructors with pinned official PoB
+        shell: pwsh
+        run: ./scripts/verify-clean-windows.ps1 -SourceRevision a69391d6daaaea1aaf8054668a094aad88dd7eaa
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh

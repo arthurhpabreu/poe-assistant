@@ -137,6 +137,15 @@ receipt matching this invocation, version, target, release and native probe.
 For unattended installs, `--silent --diagnostics <directory>` retains a unique
 diagnostic subfolder without showing dialogs. No automatic log upload occurs.
 
+`BuildLab.new` selects PoB's constructor protocol from the loaded class metadata.
+It supports automatic constructors and explicit named constructors, including
+guarded allocation. Only addon calls use this local factory; PoB's global `new`
+is preserved. Constructor failures propagate without retrying. The sidebar and
+isolated item worker share the same implementation, covered by the calculator
+cache identity. Release checks exercise official 2.67.2 and pinned upstream
+commit `a69391d6daaaea1aaf8054668a094aad88dd7eaa`, including native activation
+and constructing a current unique item in the worker.
+
 `npm run benchmark:lab -- --label cached` and a second run with
 `--label uncached --no-cache` reproduce a synthetic Arc comparison without
 touching saved/open builds. Its attribute amulet is a test fixture, not a

@@ -52,13 +52,18 @@ end
 common = { xml = { ParseXML = function(text)
   return { { elem = 'PathOfBuilding', { elem = 'Build', attrib = { targetVersion = '3_0', content = text } } } }
 end } }
+if constructorProtocol then
+  configureConstructorProtocol(constructorProtocol, new)
+  local lab = loadConstructorLab()
+  loadfile = function(file) assert(file=='/fixture/addon/BuildLab.lua',file); return function() return lab end end
+end
 local build = { state = 'original', savers = {}, targetVersion = '3_0', buildName = 'test', characterLevel = 1, viewMode = 'TREE', configTab = { input = {} }, spec = { allocNodes = {}, nodes = { [1] = { id=1, name='Life', type='Normal', sd={} }, [2]={id=2,name='Life',type='Normal',sd={}} } }, calcsTab = { mainOutput = { Life = 60 } } }
 build.SaveDB = function(self) return self.state end
 build.Shutdown = function(self) self.savers = nil end
 build.Init = function(self,_,_,xml) self.state = xml; self.savers = {}; self.failFrame = xml == 'candidate'; self.targetVersion = '3_0' end
 local frames = 0
 local main = { modes = { BUILD = build }, mode='BUILD', inputEvents={}, popups={}, Init=function() end, OnKeyDown=function() end, OnKeyUp=function() end, OnFrame=function() frames=frames+1; if build.failFrame then error('synthetic calculation failure') end end }
-addon(main, { id='test-session', runtime='/runtime', node='bundled-node.exe', backendEntry='fixed.mjs', sessionFile='fixed.json', launchProcess=SpawnProcess, reportStartup=function(stage,details) startup[#startup+1]={stage=stage,details=details} end })
+addon(main, { root=constructorProtocol and '/fixture' or nil, id='test-session', runtime='/runtime', node='bundled-node.exe', backendEntry='fixed.mjs', sessionFile='fixed.json', launchProcess=SpawnProcess, reportStartup=function(stage,details) startup[#startup+1]={stage=stage,details=details} end })
 main:Init(); main:OnFrame()
 assert(backendStarts[1][1]=='bundled-node.exe' and backendStarts[1][2]=='"fixed.mjs" --session "fixed.json"', 'Managed startup did not invoke bundled Node directly')
 assert(startup[1].stage=='rendered' and startup[1].details.panel=='expanded', 'Rendering was not confirmed independently of backend readiness')

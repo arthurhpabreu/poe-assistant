@@ -62,7 +62,7 @@ return function(destination)
     if name ~= 'Modules/Main' then return original(name, ...) end
     local err, main = original(name, ...); PLoadModule = original
     if not err and main then
-      local attached, problem = pcall(function()
+      local attached, problem = xpcall(function()
         if config.probe then
           main.SaveSettings = function() end; main.CanExit = function() return true end
           main.ChangeUserPath = function(self)
@@ -72,7 +72,7 @@ return function(destination)
           main.disableDevAutoSave = true
         end
         assert(loadfile(relativeRoot .. '/addon/PobHelper.lua'))()(main, config)
-      end)
+      end, debug.traceback)
       if not attached then config.reportStartup('failed', { error = tostring(problem) }) end
     else config.reportStartup('failed', { error = tostring(err or 'PoB returned no main object') }) end
     return err, main
