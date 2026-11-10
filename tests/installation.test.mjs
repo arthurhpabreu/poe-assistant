@@ -148,10 +148,28 @@ $custom=Join-Path $links 'Custom build.lnk'; $link=[PoeAssistantShortcut]::Open(
 $helper=Join-Path $links 'PoB Helper.lnk'; $link=[PoeAssistantShortcut]::Open($helper); $link.TargetPath=$exe; $link.Arguments='"'+(Join-Path $pob 'PobHelperLaunch-abc.lua')+'"'; $link.Save()
 [IO.File]::WriteAllText((Join-Path $pob 'PobHelperLaunch-abc.lua'),'-- PoB Helper standalone entry point. Session: pobhelper-abc')
 $unowned=Join-Path $links 'Update PoE Assistant 11111111.lnk'; $link=[PoeAssistantShortcut]::Open($unowned); $link.TargetPath=$exe; $link.Arguments='"custom.lua"'; $link.Save()
+$badArgument=Join-Path $links 'Custom invalid argument.lnk'; $link=[PoeAssistantShortcut]::Open($badArgument); $link.TargetPath=$exe; $link.Arguments='"C:\\invalid<node>.lua"'; $link.Save()
+$unreadable=Join-Path $links 'Unrelated broken app.lnk'; [IO.File]::WriteAllText($unreadable,'unrelated invalid shortcut fixture')
 $integrationArgs=@{Pob=$pob;Launcher=(Join-Path $pob 'PoEAssistant.lua');Records=(Join-Path $dir 'records.json');Roots=@($links)}
+# Shell Link can reject or normalize invalid targets before saving. Exercise
+# raw candidate values directly from the trusted script's function definitions.
+$tokens=$null; $parseErrors=$null; $ast=[Management.Automation.Language.Parser]::ParseFile('${script}',[ref]$tokens,[ref]$parseErrors)
+foreach($name in @('CanonicalPath','EqualPath')) {
+ $definition=$ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)[0]
+ . ([ScriptBlock]::Create($definition.Extent.Text))
+}
+if ((CanonicalPath 'C:\\invalid<node>.exe') -or (EqualPath 'C:\\invalid<node>.exe' 'C:\\invalid<node>.exe')) { throw 'Invalid shell targets were accepted as equal file paths' }
+& '${script}' @integrationArgs -Mode Inspect | Out-Null
 & '${script}' @integrationArgs -Mode Install
 & '${script}' @integrationArgs -Mode Install
-if ((Get-ChildItem -LiteralPath $links).Count -ne 4) { throw 'An extra shortcut was created' }
+if ((Get-ChildItem -LiteralPath $links).Count -ne 6) { throw 'An extra shortcut was created' }
+if ([IO.File]::ReadAllText($unreadable) -ne 'unrelated invalid shortcut fixture' -or [PoeAssistantShortcut]::Open($badArgument).Arguments -ne '"C:\\invalid<node>.lua"') { throw 'An unrelated invalid shortcut was modified' }
+$savedOrdinary=[IO.File]::ReadAllBytes($ordinary); $knownReadFailed=$false
+try {
+ [IO.File]::WriteAllText($ordinary,'deliberate recorded-link corruption')
+ try { & '${script}' @integrationArgs -Mode Install } catch { $knownReadFailed=$true }
+} finally { [IO.File]::WriteAllBytes($ordinary,$savedOrdinary) }
+if (-not $knownReadFailed) { throw 'A recorded PoB shortcut read failure was ignored' }
 $changed=[PoeAssistantShortcut]::Open($ordinary)
 if ((Get-Item -LiteralPath $changed.TargetPath).FullName -ne (Get-Item -LiteralPath $exe).FullName -or (Get-Item -LiteralPath $changed.Arguments.Trim('"')).FullName -ne (Get-Item -LiteralPath $integrationArgs.Launcher).FullName) { throw 'Usual shortcut was not integrated' }
 & '${script}' @integrationArgs -Mode Cleanup

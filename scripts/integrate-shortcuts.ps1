@@ -5,7 +5,10 @@ $executable = Join-Path $Pob 'Path of Building.exe'
 . (Join-Path $PSScriptRoot 'shortcut-api.ps1')
 if (-not $Roots) { $Roots = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'), (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')) }
 function CanonicalPath($value) {
-    $full = [IO.Path]::GetFullPath($value).TrimEnd('\')
+    # Shell links can target virtual folders or contain an invalid raw path.
+    # They are unrelated to the selected PoB and cannot be compared as files.
+    try { $full = [IO.Path]::GetFullPath($value).TrimEnd('\') }
+    catch { return $null }
     $missing = @(); $ancestor = $full
     while ($ancestor -and -not (Test-Path -LiteralPath $ancestor)) { $missing = @((Split-Path -Leaf $ancestor)) + $missing; $ancestor = Split-Path -Parent $ancestor }
     if (-not $ancestor) { return $full }
@@ -13,7 +16,11 @@ function CanonicalPath($value) {
     foreach ($part in $missing) { $resolved = Join-Path $resolved $part }
     return $resolved
 }
-function EqualPath($a, $b) { if (-not $a -or -not $b) { return $false }; return (CanonicalPath $a) -ieq (CanonicalPath $b) }
+function EqualPath($a, $b) {
+    if (-not $a -or -not $b) { return $false }
+    $left = CanonicalPath $a; $right = CanonicalPath $b
+    return $left -and $right -and $left -ieq $right
+}
 function ArgumentPath($value) {
     if ($value -match '^"([^"]+)"$') { return $Matches[1] }
     if ($value -match '^[^\s"]+$') { return $value }
@@ -44,23 +51,39 @@ if ($Mode -eq 'Restore') {
     }
     exit 0
 }
-$links = @(); $visited = @{}
+$links = @(); $visited = @{}; $unreadable = 0
 foreach ($folder in $Roots) {
     if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
     $recurse = $folder -in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'))
     foreach ($file in Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -Recurse:$recurse -ErrorAction SilentlyContinue) {
         if ($visited.ContainsKey($file.FullName)) { continue }; $visited[$file.FullName] = $true
-        $link = [PoeAssistantShortcut]::Open($file.FullName)
+        $link = $null
+        try {
+            $link = [PoeAssistantShortcut]::Open($file.FullName)
+            $target = [string]$link.TargetPath; $arguments = [string]$link.Arguments; $workingDirectory = [string]$link.WorkingDirectory
+        } catch {
+            # A recorded link belongs to this installation: losing access to it
+            # must fail rather than silently leave its integration unverified.
+            if (@($previous | Where-Object file -EQ $file.FullName).Count) { throw }
+            $unreadable++; continue
+        } finally { if ($link) { try { $link.Dispose() } catch { } } }
+        if (-not $target -or -not (CanonicalPath $target)) { continue }
         $legacy = $false; $legacyDestination = $null; $eligible = $false
-        if (EqualPath $link.TargetPath $executable) {
-            $argument = ArgumentPath $link.Arguments.Trim()
-            $argumentPath = if (-not $argument) { $null } elseif ([IO.Path]::IsPathRooted($argument)) { $argument } else { Join-Path $Pob $argument }
+        if (EqualPath $target $executable) {
+            $argument = ArgumentPath $arguments.Trim()
+            $argumentPath = $null
+            if ($argument) {
+                try {
+                    $candidateArgument = if ([IO.Path]::IsPathRooted($argument)) { $argument } else { Join-Path $Pob $argument }
+                    if (CanonicalPath $candidateArgument) { $argumentPath = $candidateArgument }
+                } catch { $argumentPath = $null }
+            }
             if ($argumentPath -and $file.BaseName -match '^PoB Helper(?: [\w-]+)?$' -and [IO.Path]::GetFileName($argumentPath) -like 'PobHelperLaunch-*.lua' -and (EqualPath (Split-Path -Parent $argumentPath) $Pob) -and (Test-Path -LiteralPath $argumentPath)) {
                 $source = Get-Content -Encoding UTF8 -Raw -LiteralPath $argumentPath
                 $legacy = $source -match 'PoB Helper' -and $source -match 'Session: pobhelper-[\w-]+'
             }
-            $eligible = -not $legacy -and (-not $link.Arguments.Trim() -or (EqualPath $argumentPath (Join-Path $Pob 'Launch.lua')) -or ($Launcher -and (EqualPath $argumentPath $Launcher)))
-        } elseif ($file.BaseName -match '^(?:(?:Update|Rollback|Uninstall) )?PoE Assistant(?: [a-f0-9]{8})?$' -and [IO.Path]::GetFileName($link.TargetPath) -ieq 'powershell.exe' -and $link.Arguments -match '(?i)-File\s+"([^"]+\\(?:Launch|Update|Rollback|Uninstall)\.ps1)"\s*$') {
+            $eligible = -not $legacy -and (-not $arguments.Trim() -or (EqualPath $argumentPath (Join-Path $Pob 'Launch.lua')) -or ($Launcher -and (EqualPath $argumentPath $Launcher)))
+        } elseif ($file.BaseName -match '^(?:(?:Update|Rollback|Uninstall) )?PoE Assistant(?: [a-f0-9]{8})?$' -and [IO.Path]::GetFileName($target) -ieq 'powershell.exe' -and $arguments -match '(?i)-File\s+"([^"]+\\(?:Launch|Update|Rollback|Uninstall)\.ps1)"\s*$') {
             $candidate = Split-Path -Parent $Matches[1]
             $pointer = Join-Path $candidate 'current.json'
             if (Test-Path -LiteralPath $pointer) {
@@ -71,9 +94,10 @@ foreach ($folder in $Roots) {
                 } catch { }
             }
         }
-        if ($legacy -or $eligible) { $links += [pscustomobject]@{file=$file.FullName;target=$link.TargetPath;arguments=$link.Arguments;workingDirectory=$link.WorkingDirectory;legacy=$legacy;legacyDestination=$legacyDestination;eligible=$eligible} }
+        if ($legacy -or $eligible) { $links += [pscustomobject]@{file=$file.FullName;target=$target;arguments=$arguments;workingDirectory=$workingDirectory;legacy=$legacy;legacyDestination=$legacyDestination;eligible=$eligible} }
     }
 }
+if ($unreadable) { Write-Warning ('Skipped ' + $unreadable + ' unreadable Windows shortcut(s) during detection.') }
 if ($Mode -eq 'Inspect') { ConvertTo-Json -InputObject @($links) -Depth 8; exit 0 }
 if ($Mode -eq 'Cleanup') {
     $backupDir = Join-Path (Split-Path -Parent $Records) 'removed-shortcuts'

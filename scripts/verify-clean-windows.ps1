@@ -11,5 +11,12 @@ $pob = Join-Path $root ('PoB-Jo' + [char]0xE3 + 'o-' + [char]0x6D4B + [char]0x8B
 Expand-Archive -LiteralPath $archive -DestinationPath $pob
 if (-not (Test-Path -LiteralPath (Join-Path $pob 'Path of Building.exe'))) { throw 'Official portable PoB archive layout changed.' }
 & node (Join-Path $PSScriptRoot 'verify-installer.mjs') --pob $pob
-if ($LASTEXITCODE) { throw 'Clean Windows installation verification failed.' }
+if ($LASTEXITCODE) {
+    # CI fixtures contain no user builds or credentials. Print only this run's
+    # named failure records so a fresh-machine failure retains its script stack.
+    $checks = Join-Path (Split-Path -Parent $PSScriptRoot) '.pob-helper'
+    $latest = Get-ChildItem -LiteralPath $checks -Directory -Filter 'installer-check-*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latest) { Get-ChildItem -LiteralPath (Join-Path $latest.FullName 'exe-diagnostics') -File -Filter failure.json -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -Encoding UTF8 -LiteralPath $_.FullName -Tail 25 } }
+    throw 'Clean Windows installation verification failed.'
+}
 Write-Output ('Clean Windows verification passed using official PoB ' + $Version + ', Unicode paths and isolated native shortcut startup.')
