@@ -172,7 +172,8 @@ export async function calculateBuild({ engine, xml, dir, signal, inspections }) 
   return result;
 }
 
-export async function evaluateBuilds({ args, snapshot, install, dir, cacheDir = path.join(dir, 'engine-cache'), signal, version, progress = () => {} }) {
+export async function evaluateBuilds({ args, snapshot, install, dir, cacheDir = path.join(dir, 'engine-cache'), signal, version, progress = () => {}, evaluationCache = new Map(), calculate = calculateBuild }) {
+  const started = performance.now();
   const candidates = args.candidates || (args.operations ? [{ label: args.label || 'Candidate', operations: args.operations }] : []);
   if (!Array.isArray(candidates) || candidates.length < 1 || candidates.length > 8) throw Error('Compare 1 to 8 complete candidates per call.');
   const xmls = candidates.map(candidate => ({ label: String(candidate.label || 'Candidate').slice(0, 120), xml: applyOperations(snapshot.xml, candidate.operations) }));
@@ -182,21 +183,42 @@ export async function evaluateBuilds({ args, snapshot, install, dir, cacheDir = 
   assertLeagueBuild(snapshot.xml, policy);
   for (const candidate of xmls) assertLeagueBuild(candidate.xml, policy);
   const engine = await prepareEngine(install, cacheDir, version, signal);
+  const engineReadyAt = performance.now();
+  const clone = await readJson(path.join(engine, 'assistant-engine.json'));
+  const calculatorIdentity = hash(JSON.stringify(await Promise.all(['src/build-lab.mjs', 'addon/BuildLab.lua', 'src/xml.mjs', 'scripts/run-worker.ps1'].map(async file => [file, hash(await fs.readFile(path.join(root, file)))]))));
+  const cachePrefix = `${version.fingerprint}:${clone.digest}:${calculatorIdentity}:`;
+  const timings = { engineMs: Math.round(engineReadyAt - started), workers: 0, cacheHits: 0, calculationsMs: 0 };
   const batchDir = path.join(engine, 'requests', crypto.randomUUID().slice(0,12));
+  async function measure(xml, name) {
+    signal?.throwIfAborted();
+    const key = cachePrefix + hash(xml), cached = evaluationCache.get(key);
+    if (cached) { timings.cacheHits++; return structuredClone(cached); }
+    const start = performance.now();
+    timings.workers++;
+    const result = await calculate({ engine, xml, dir: path.join(batchDir, name), signal });
+    timings.calculationsMs += Math.round(performance.now() - start);
+    signal?.throwIfAborted();
+    if (!result.report.validation.errors.length) {
+      evaluationCache.set(key, structuredClone(result));
+      if (evaluationCache.size > 32) evaluationCache.delete(evaluationCache.keys().next().value);
+    }
+    return result;
+  }
   progress('Calculating the original build in isolation...');
-  const base = await calculateBuild({ engine, xml: snapshot.xml, dir: path.join(batchDir, 'base'), signal });
+  const base = await measure(snapshot.xml, 'base');
   const reports = [];
   for (let i = 0; i < xmls.length; i++) {
     signal?.throwIfAborted();
     progress(`Calculating candidate ${i + 1} of ${xmls.length}...`);
     try {
-      const result = await calculateBuild({ engine, xml: xmls[i].xml, dir: path.join(batchDir, String(i)), signal });
+      const result = await measure(xmls[i].xml, String(i));
       reports.push({ label: xmls[i].label, xmlHash: hash(xmls[i].xml), calculationHash: calculationHash(xmls[i].xml), report: result.report });
     } catch(error) { signal?.throwIfAborted(); reports.push({ label: xmls[i].label, xmlHash: hash(xmls[i].xml), error: error.message }); }
   }
   if ((await installationVersion(install)).fingerprint !== version.fingerprint) throw Error('PoB changed during candidate calculation. Restart PoB.');
   const ranked = rankCandidates(base.report, reports, args);
-  const result = { baseHash: hash(snapshot.xml), fingerprint: version.fingerprint, objective: args.objective || 'FullDPS', minimums: args.minimums || {}, maximums: args.maximums || {}, base: base.report, candidates: ranked,
+  timings.totalMs = Math.round(performance.now() - started);
+  const result = { baseHash: hash(snapshot.xml), fingerprint: version.fingerprint, objective: args.objective || 'FullDPS', minimums: args.minimums || {}, maximums: args.maximums || {}, base: base.report, candidates: ranked, timings,
     note: 'Ranked only among measured candidates. A missing objective stat is not zero. Configuration differences are included explicitly. No global optimum is claimed.' };
   await atomicWrite(path.join(batchDir, 'comparison.json'), result);
   return result;

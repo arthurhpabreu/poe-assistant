@@ -9,6 +9,7 @@ import { installationVersion } from './knowledge.mjs';
 import { browserLogin, checkAuth } from './auth.mjs';
 import { modelCatalog } from './models.mjs';
 import { latestRelease, newerVersion } from './updates.mjs';
+import { nativeCommand } from './native-bridge.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sessionArg = process.argv.indexOf('--session');
@@ -46,7 +47,10 @@ if (previousUi?.sessionId === session.id && previousUi.buildKey && (previousUi.b
   ui.messages = previousUi.messages.filter(message => ['user', 'assistant', 'system'].includes(message.role) && typeof message.text === 'string');
   histories.set(activeKey, ui.messages);
   if (!previousUi.busy && previousUi.proposal?.buildKey === activeKey) ui.proposal = previousUi.proposal;
-  if (previousUi.busy) ui.messages.push({ role: 'system', text: 'The chat backend restarted before the response finished. Send your request again to continue.' });
+  if (ui.proposal && !ui.proposal.id) ui.proposal.id = crypto.randomUUID();
+  if (previousUi.lastRequest) ui.lastRequest = { ...previousUi.lastRequest, state: previousUi.lastRequest.state === 'running' ? 'failed' : previousUi.lastRequest.state };
+  ui.requestResults = previousUi.requestResults || {};
+  if (previousUi.busy) ui.messages.push({ role: 'system', text: previousUi.action ? 'The backend restarted during a PoB application. Checking its commit receipt.' : 'The chat backend restarted before the response finished. Send your request again to continue.' });
   ui.status = ui.proposal ? 'Proposal restored. Review the changes before applying.' : 'Reconnected. Your conversation was preserved.';
 }
 const publish = async () => { ui.buildKey = activeKey; await atomicWrite(path.join(runtime, 'ui.json'), ui); };
@@ -76,22 +80,73 @@ async function snapshotNow({ allowStale = false } = {}) {
   }
   return { ...snapshot, sourceFingerprint: instanceContexts[snapshot.instanceId] };
 }
-async function native(name, args, expected, signal) {
-  const id = crypto.randomUUID();
-  const command = { protocol: 1, sessionId: session.id, id, name, args, expectedBuildKey: expected.buildKey, expectedRevision: expected.revision, expectedXml: expected.revision ? undefined : expected.xml, deadline: Date.now() + 30_000 };
-  await atomicWrite(path.join(runtime, 'command.json'), command);
-  try {
-    for (let i = 0; i < 300; i++) {
-      signal?.throwIfAborted();
-      const ack = await readJson(path.join(runtime, 'ack.json'));
-      if (ack?.id === id && ack.sessionId === session.id) {
-        if (ack.error) throw Error(ack.error);
-        return ack.result;
-      }
-      await new Promise(resolve => setTimeout(resolve, 100));
+const native = (name, args, expected, signal, onDispatch) => nativeCommand({ runtime, sessionId: session.id, name, args, expected, signal, onDispatch });
+const completedRequests = new Set(Object.keys(ui.requestResults || {}));
+function recordRequest(result) {
+  completedRequests.add(result.id);
+  ui.lastRequest = result;
+  ui.requestResults ||= {};
+  ui.requestResults[result.id] = result;
+  const ids = Object.keys(ui.requestResults);
+  if (ids.length > 50) delete ui.requestResults[ids[0]];
+}
+let interruptedJournal = await readJson(path.join(runtime, 'apply-journal.json'));
+if (interruptedJournal?.sessionId !== session.id || !/^[\w-]{1,100}$/.test(interruptedJournal?.requestId || '') || !/^[a-f0-9-]{36}$/.test(interruptedJournal?.commandId || '') || !/^\d+-(apply|undo)\.xml$/.test(interruptedJournal?.backupName || '') || !['apply','undo'].includes(interruptedJournal?.type)) interruptedJournal = null;
+async function recoverInterruptedApplication() {
+  const journal = interruptedJournal;
+  if (!journal) return;
+  const receipt = await readJson(path.join(runtime, 'receipts', journal.commandId + '.json'));
+  const live = await readJson(path.join(runtime, 'snapshot.json'));
+  const matches = receipt?.id === journal.commandId && receipt.sessionId === session.id && receipt.instanceId === journal.instanceId && receipt.buildKey === journal.buildKey;
+  if (matches && receipt.result?.applied && receipt.result.committedRevision) {
+    const known = ui.requestResults?.[journal.requestId]?.state === 'complete';
+    const sameBuild = live?.instanceId === journal.instanceId && live.buildKey === journal.buildKey && live.revision === receipt.result.committedRevision;
+    const before = await fs.readFile(path.join(runtime, 'backups', journal.backupName), 'utf8').catch(() => null);
+    lastUndo = journal.type === 'apply' && sameBuild && before ? { id: crypto.randomUUID(), xml: before, baseHash: hash(receipt.result.committedRevision), buildKey: journal.buildKey, fingerprint: journal.fingerprint } : null;
+    ui.canUndo = !!lastUndo; ui.undoId = lastUndo?.id;
+    if (!known) {
+      ui.status = 'Recovered the confirmed PoB application after a backend restart.';
+      ui.messages.push({ role: 'system', text: ui.status + (sameBuild ? '' : ' Undo is unavailable because the open build subsequently changed.') });
+      recordRequest({ id: journal.requestId, type: journal.type, state: 'complete' });
     }
-    throw Error('PoB did not respond within 30 seconds.');
-  } finally { await fs.rm(path.join(runtime, 'command.json'), { force: true }); }
+    if (!known) ui.proposal = null;
+    ui.busy = false; ui.action = null; interruptedJournal = null;
+    try { const command = await readJson(path.join(runtime, 'command.json')); if (command?.id === journal.commandId) await fs.rm(path.join(runtime, 'command.json'), { force: true }); } catch { /* Receipt remains authoritative. */ }
+    return;
+  }
+  const running = previousUi?.lastRequest?.id === journal.requestId && previousUi.lastRequest.state === 'running';
+  if (!matches && running && Date.now() < journal.deadline && live?.instanceId === journal.instanceId) {
+    ui.busy = true; ui.action = journal.type; ui.startedAt ||= Date.now();
+    ui.status = 'Reconnecting to the pending PoB application. Waiting for its commit receipt...';
+    activityStatus = ui.status;
+    ui.lastRequest = { id: journal.requestId, type: journal.type, state: 'running' }; return;
+  }
+  if (running) {
+    const error = matches && receipt.error || 'The interrupted application could not be confirmed. Check the open build and recovery backup before a new analysis.';
+    recordRequest({ id: journal.requestId, type: journal.type, state: 'failed', error });
+    ui.messages.push({ role: 'system', text: error }); ui.status = error;
+    ui.proposal = null; ui.busy = false; ui.action = null;
+  }
+  interruptedJournal = null;
+}
+async function processRequest(request) {
+  if (completedRequests.has(request.id)) return;
+  ui.lastRequest = { id: request.id, type: request.type, state: 'running' };
+  try {
+    await publish();
+    await handle(request);
+    recordRequest({ id: request.id, type: request.type, state: 'complete' });
+  } catch (error) {
+    if (error.code === 'APPLY_UNCONFIRMED') { ui.proposal = null; ui.canUndo = false; lastUndo = null; }
+    const message = `${request.type === 'apply' ? 'Changes were not confirmed' : request.type === 'undo' ? 'Undo failed' : 'Request failed'}: ${error.message}`;
+    ui.messages.push({ role: 'system', text: message });
+    recordRequest({ id: request.id, type: request.type, state: 'failed', error: message });
+    await reportError(error);
+  } finally {
+    completedRequests.add(request.id);
+    if (completedRequests.size > 1000) completedRequests.delete(completedRequests.values().next().value);
+    await publish();
+  }
 }
 async function handle(request) {
   if (request.sessionId !== session.id || request.protocol !== 1 || !/^[\w-]{1,100}$/.test(request.id)) throw Error('Invalid protocol or request from another session.');
@@ -157,18 +212,29 @@ async function handle(request) {
   if (request.type === 'apply' || request.type === 'undo') {
     const proposal = request.type === 'apply' ? ui.proposal : lastUndo;
     if (!proposal) throw Error('No changes are available.');
+    if (request.proposalId !== proposal.id) throw Error('This proposal was replaced or already applied. Review the latest changes.');
+    ui.busy = true; ui.action = request.type;
+    ui.status = request.type === 'apply' ? 'Applying changes in PoB. Waiting for the calculation and commit confirmation...' : 'Restoring the previous build. Waiting for PoB confirmation...';
+    ui.startedAt = Date.now(); activityStatus = ui.status; ui.workMessage = '';
+    try {
+    await publish();
     const currentVersion = await installationVersion(session.install);
     if (snapshot.pobVersion !== currentVersion.version || proposal.fingerprint && proposal.fingerprint !== currentVersion.fingerprint) throw Error('PoB was updated. Restart it and run a new analysis.');
     if (proposal.buildKey !== snapshot.buildKey || proposal.baseHash !== hash(snapshot.revision || snapshot.xml)) throw Error('The build changed. Run a new analysis before applying or undoing.');
     const backup = path.join(runtime, 'backups', `${Date.now()}-${request.type}.xml`);
     await atomicWrite(backup, snapshot.xml);
-    const result = await native('apply', { xml: proposal.xml }, snapshot);
+    const result = await native('apply', { xml: proposal.xml }, snapshot, undefined, command => atomicWrite(path.join(runtime, 'apply-journal.json'), {
+      sessionId: session.id, requestId: request.id, type: request.type, commandId: command.id, deadline: command.deadline,
+      instanceId: snapshot.instanceId, buildKey: snapshot.buildKey, backupName: path.basename(backup), fingerprint: currentVersion.fingerprint,
+    }));
     if (!result.applied || result.buildKey !== snapshot.buildKey || !result.committedRevision) throw Error('PoB did not confirm the change. The backup was preserved.');
-    lastUndo = request.type === 'undo' ? null : { xml: snapshot.xml, baseHash: hash(result.committedRevision), buildKey: result.buildKey, fingerprint: currentVersion.fingerprint };
+    lastUndo = request.type === 'undo' ? null : { id: crypto.randomUUID(), xml: snapshot.xml, baseHash: hash(result.committedRevision), buildKey: result.buildKey, fingerprint: currentVersion.fingerprint };
+    ui.undoId = lastUndo?.id;
     ui.proposal = null; ui.canUndo = !!lastUndo;
     ui.status = request.type === 'undo' ? 'Changes undone. The previous build state was restored.' : 'Changes applied to the open build. Use Ctrl+S in PoB to save the file.';
     ui.messages.push({ role: 'system', text: request.type === 'undo' ? 'The previous change was undone.' : 'Proposal applied. A recovery backup was saved.' });
-    await publish(); return;
+    return;
+    } finally { ui.busy = false; ui.action = null; }
   }
   if (request.type !== 'chat') throw Error('Unknown request.');
   if (typeof request.text !== 'string' || !request.text.trim() || request.text.length > 12_000) throw Error('Invalid message (maximum 12,000 characters).');
@@ -190,12 +256,13 @@ async function handle(request) {
     const sourceText = result.sources.length ? '\n\nSources consulted:\n' + result.sources.join('\n') : '';
     const validationText = result.validation ? '\n\nPoB validation: complete candidate calculated with engine ' + result.version.version + '. Compared against the unchanged baseline; ' + (result.validation.report.warnings?.length || 0) + ' calculator warning(s).' : '';
     history.push({ role: 'assistant', text: result.message + validationText + sourceText });
-    if (result.candidate) ui.proposal = { title: result.proposalTitle || 'Suggested changes', xml: result.candidate, operations: result.operations, baseHash: hash(snapshot.revision || snapshot.xml), buildKey: key, fingerprint: result.version.fingerprint, validation: result.validation };
+    if (result.candidate) ui.proposal = { id: crypto.randomUUID(), title: result.proposalTitle || 'Suggested changes', xml: result.candidate, operations: result.operations, baseHash: hash(snapshot.revision || snapshot.xml), buildKey: key, fingerprint: result.version.fingerprint, validation: result.validation };
     ui.status = result.candidate ? 'Proposal ready. Review the changes before applying.' : 'Analysis complete.';
   } catch (error) { history.push({ role: 'system', text: controller.signal.aborted ? 'Analysis cancelled.' : error.message }); ui.status = 'See the message in the chat.'; }
   finally { activeController = null; ui.busy = false; ui.workMessage = ''; ui.lastCompletedRequest = request.id; if (activeKey === key) ui.messages = history; await publish(); }
 }
 async function tick() {
+  if (interruptedJournal) { await recoverInterruptedApplication(); await publish(); }
   if (Date.now() - modelsCheckedAt >= 30_000) {
     modelsCheckedAt = Date.now();
     const models = await modelCatalog();
@@ -228,10 +295,11 @@ async function tick() {
     if (processing) continue;
     await fs.rm(full);
     processing = true;
-    handle(request).catch(reportError).finally(() => { processing = false; });
+    processRequest(request).catch(reportError).finally(() => { processing = false; });
   }
 }
 await fs.mkdir(path.join(runtime, 'inbox'), { recursive: true });
+await recoverInterruptedApplication();
 await publish();
 let ticking = false;
 const timer = setInterval(() => { if (ticking) return; ticking = true; tick().catch(reportError).finally(() => { ticking = false; }); }, 400);

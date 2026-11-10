@@ -39,10 +39,11 @@ export async function chat({ text, history, snapshot, settings, install, dir, en
   const turns = [];
   context.leaguePolicy = policy;
   const measured = new Map();
+  const evaluationCache = new Map();
   async function compare(args) {
     const candidates = args.candidates || [{ label: args.label || 'Candidate', operations: args.operations }];
     for (const candidate of candidates) assertLeagueBuild(applyOperations(snapshot.xml, candidate.operations), policy);
-    const result = await evaluateCandidates({ args, snapshot, install, dir, cacheDir: engineDir, signal, version, progress });
+    const result = await evaluateCandidates({ args, snapshot, install, dir, cacheDir: engineDir, signal, version, progress, evaluationCache });
     if (result.baseHash !== hash(snapshot.xml) || result.fingerprint !== version.fingerprint) throw Error('Candidate calculation does not match this build and engine.');
     for (const candidate of result.candidates) if (!candidate.error && candidate.report) measured.set(candidate.xmlHash, { ...candidate, base: result.base, objective: result.objective, fingerprint: result.fingerprint });
     return result;

@@ -11,7 +11,11 @@ return function(main, config)
   local ui = { messages = {}, status = 'Starting assistant...', settings = {} }
   local host, width, x, height, advanced, collapsed, disabled, buildKey
   local lastText, lastWrapWidth, handledCommand, pendingAck, applying, transaction
-  local cards, wide, showDetails = {}, false, false
+  local pendingAction, localError
+  local snapshot
+  local cards, showDetails = {}, false
+  local panelWidth, resizing
+  local conversationRevision, conversationSignature = 0, nil
   local lastSnapshot, lastSnapshotAt, heartbeatAt = nil, 0, 0
   local modelProvider, modelSelections = 'codex', {}
   -- Standard PoB's font renderer is ASCII-only; keep original JSON/XML in UTF-8.
@@ -35,12 +39,25 @@ return function(main, config)
     assert(os.rename(name .. '.tmp', name))
   end
   local function request(kind, data)
+    if pendingAction and kind ~= 'cancel' then return end
+    if kind == 'apply' or kind == 'undo' then
+      local ok, failure = pcall(snapshot)
+      if not ok then localError = 'Could not read the current build: ' .. tostring(failure); return end
+    end
     sequence = sequence + 1
     local id = instance .. '-' .. sequence
     data = data or {}; data.type = kind; data.id = id; data.protocol = 1; data.sessionId = config.id
     data.buildKey = buildKey; data.createdAt = os.time() * 1000
-    write('inbox/' .. id .. '.json', data)
+    if kind == 'apply' then data.proposalId = ui.proposal and ui.proposal.id end
+    if kind == 'undo' then data.proposalId = ui.undoId end
+    local sent, failure = pcall(write, 'inbox/' .. id .. '.json', data)
+    if not sent then localError = 'Request could not be sent: ' .. tostring(failure); return end
+    localError = nil
+    if kind == 'apply' or kind == 'undo' then pendingAction = { id = id, type = kind, startedAt = GetTime() } end
+    return true
   end
+  local layout = read('panel-layout.json')
+  panelWidth = layout and tonumber(layout.width)
   local function currentBuild()
     return main.mode == 'BUILD' and main.modes.BUILD and main.modes.BUILD.savers and main.modes.BUILD
   end
@@ -69,12 +86,12 @@ return function(main, config)
     end
     return json.encode(canonical(document[1]))
   end
-  local function snapshot()
+  snapshot = function()
     local build = currentBuild()
     local state = { protocol = 1, sessionId = config.id, instanceId = instance, timestamp = os.time() * 1000, mode = main.mode, buildKey = buildKey, pobVersion = launch.versionNumber }
     if build then
       state.xml = assert(build:SaveDB('PoB Helper snapshot'))
-      state.revision = revision(state.xml)
+      state.revision = lastSnapshot and lastSnapshot.xml == state.xml and lastSnapshot.revision or revision(state.xml)
       state.name = build.buildName; state.fileName = build.dbFileName; state.level = build.characterLevel
       state.targetVersion = build.targetVersion; state.treeVersion = build.spec and build.spec.treeVersion
       state.output = numericOutput(build.calcsTab and build.calcsTab.mainOutput)
@@ -140,7 +157,7 @@ return function(main, config)
   end
   local function updateConversation()
     local c = host.controls
-    local signature = json.encode({ ui.messages or {}, ui.proposal or false, showDetails, ui.settings.access or 'full', ui.busy or false, ui.workMessage or '' })
+    local signature = tostring(conversationRevision) .. ':' .. tostring(showDetails)
     local changed = signature ~= lastText or c.conversation.width ~= lastWrapWidth
     local atBottom = (c.chatScroll.offsetMax or 0) - (c.chatScroll.offset or 0) < 28
     if changed then
@@ -248,8 +265,7 @@ return function(main, config)
   local function send(text)
     text = text or host.controls.input.buf
     if ui.busy or text:match('^%s*$') then return end
-    request('chat', { text = text, settings = settingsValue() })
-    host.controls.input:SetText(''); host:SelectControl(host.controls.input)
+    if request('chat', { text = text, settings = settingsValue() }) then host.controls.input:SetText(''); host:SelectControl(host.controls.input) end
   end
   local function initializeControls()
     host = new('ControlHost')
@@ -265,7 +281,6 @@ return function(main, config)
     host.controls.customModel = new('EditControl', nil, { 0, 144, 200, 24 }, '', nil, nil, 150)
     host.controls.customModel:SetPlaceholder('Custom model ID')
     host.controls.settings = new('ButtonControl', nil, { 0, 144, 100, 26 }, 'Settings', function() advanced = not advanced end)
-    host.controls.wide = new('ButtonControl', nil, { 0, 144, 82, 26 }, 'Wider', function() wide = not wide end)
     host.controls.copy = new('ButtonControl', nil, { 0, 144, 106, 26 }, 'Copy reply', function()
       if showDetails and ui.proposal then Copy(json.encode(ui.proposal.operations, { indent = true })); return end
       for index = #(ui.messages or {}), 1, -1 do if ui.messages[index].role == 'assistant' then Copy(ui.messages[index].text); return end end
@@ -291,7 +306,7 @@ return function(main, config)
     end
     host.controls.send = new('ButtonControl', nil, { 0, 0, 100, 28 }, 'Send', function() send() end)
     host.controls.cancel = new('ButtonControl', nil, { 0, 0, 100, 28 }, 'Cancel', function() request('cancel') end)
-    host.controls.clear = new('ButtonControl', nil, { 0, 0, 104, 28 }, 'Clear chat', function() request('clear_chat') end)
+    host.controls.clear = new('ButtonControl', nil, { 0, 0, 116, 28 }, 'Clear history', function() request('clear_chat') end)
     host.controls.apply = new('ButtonControl', nil, { 0, 0, 160, 28 }, 'Apply changes', function() request('apply') end)
     host.controls.details = new('ButtonControl', nil, { 0, 0, 90, 28 }, 'Details', function() showDetails = not showDetails end)
     host.controls.undo = new('ButtonControl', nil, { 0, 0, 110, 27 }, 'Undo', function() request('undo') end)
@@ -300,7 +315,7 @@ return function(main, config)
     host.controls.executable:SetPlaceholder('.exe or .js (auto-detect when empty)')
     host.controls.effort = new('DropDownControl', nil, { 0, 278, 160, 25 }, { 'CLI default', 'low', 'medium', 'high', 'xhigh', 'max' })
     host.controls.research = new('DropDownControl', nil, { 0, 342, 250, 25 }, { 'Forum / Reddit / wiki', 'Web research off' })
-    host.controls.updates = new('ButtonControl', nil, { 0, 465, 250, 25 }, 'Check addon updates', function() request('check_update') end)
+    host.controls.updates = new('ButtonControl', nil, { 0, 502, 250, 28 }, 'Check addon updates', function() request('check_update') end)
     host.controls.access = new('DropDownControl', nil, { 0, 406, 250, 25 }, { 'Full machine access', 'PoB tools only' })
     host.controls.save = new('ButtonControl', nil, { 0, 450, 150, 28 }, 'Save settings', function() saveSettings(); advanced = false end)
     host.controls.login = new('ButtonControl', nil, { 0, 492, 130, 28 }, 'Sign in', function() request('login', { settings = settingsValue() }) end)
@@ -313,10 +328,16 @@ return function(main, config)
       local changedModels = json.encode(nextUi.models or {}) ~= json.encode(ui.models or {})
       local pendingModel = host and selectedModel() or ''
       if host and nextUi.chatClearedAt and nextUi.chatClearedAt ~= ui.chatClearedAt then
-        host.controls.input:SetText(''); host.controls.chatScroll:SetOffset(0)
+        host.controls.chatScroll:SetOffset(0)
         showDetails = false; lastText = nil
       end
       ui = nextUi
+      -- Render state excludes the full candidate XML and calculator report.
+      -- Compare once per bridge update, never serialize it every draw frame.
+      local signature = json.encode({ ui.messages or {}, ui.proposal and { ui.proposal.id, ui.proposal.title, ui.proposal.operations } or false, ui.settings.access or 'full', ui.busy or false, ui.workMessage or '' })
+      if signature ~= conversationSignature then conversationSignature = signature; conversationRevision = conversationRevision + 1 end
+      local outcome = pendingAction and ((ui.requestResults or {})[pendingAction.id] or ui.lastRequest and ui.lastRequest.id == pendingAction.id and ui.lastRequest)
+      if outcome and outcome.state ~= 'running' then pendingAction = nil end
       if changedSettings and host then
         host.controls.provider.selIndex = ui.settings.provider == 'claude' and 2 or 1
         modelSelections = ui.settings.modelSelections or {}
@@ -341,6 +362,7 @@ return function(main, config)
     end
     local ok, result = pcall(function()
       assert(command.protocol == 1 and command.sessionId == config.id, 'Invalid session.')
+      assert(not command.expectedInstanceId or command.expectedInstanceId == instance, 'This command belongs to a different PoB window.')
       assert(command.deadline >= os.time() * 1000, 'Command expired.')
       local build = assert(currentBuild(), 'Open a build first.')
       assert(command.expectedBuildKey == buildKey, 'The open build changed.')
@@ -416,7 +438,7 @@ return function(main, config)
         end
         applying = false; main.disableDevAutoSave = oldDisable
         pendingAck = command
-        transaction = { xml = before, fileName = fileName, name = name, importLink = importLink, view = view }
+        transaction = { xml = before, beforeRevision = revision(before), proposedRevision = revision(args.xml), fileName = fileName, name = name, importLink = importLink, view = view }
         return { pending = true }
       else error('Command not allowed.') end
     end)
@@ -443,9 +465,21 @@ return function(main, config)
   end
   main.OnKeyDown = function(self, key, doubleClick)
     if key == 'F8' then collapsed = not collapsed; return end
+    if key == 'LEFTBUTTON' and host and x and not collapsed and not self.popups[1] then
+      local fullWidth, fullHeight = GetVirtualScreenSize()
+      local cx = GetCursorPos()
+      if fullWidth >= 980 and fullHeight >= 620 and math.abs(cx - x) <= 7 then resizing = true; host:SelectControl(); return end
+    end
     originalKeyDown(self, key, doubleClick)
   end
-  main.OnKeyUp = function(self, key) if key ~= 'F8' then originalKeyUp(self, key) end end
+  main.OnKeyUp = function(self, key)
+    if key == 'LEFTBUTTON' and resizing then
+      local fullWidth = GetVirtualScreenSize(); local cx = GetCursorPos()
+      panelWidth = math.min(fullWidth - 420, math.max(380, fullWidth - cx)); resizing = nil
+      pcall(write, 'panel-layout.json', { width = panelWidth }); return
+    end
+    if key ~= 'F8' then originalKeyUp(self, key) end
+  end
   local function panelFrame()
     if GetTime() - clock > 450 then
       syncUi(); clock = GetTime()
@@ -480,7 +514,9 @@ return function(main, config)
       snapshot()
     end)
     applying = false; main.disableDevAutoSave = oldDisable
-    write('ack.json', { protocol = 1, id = command.id, sessionId = config.id, error = restored and ('Proposal rejected; build restored: ' .. tostring(failure)) or ('Manual recovery required: recovery.xml. ' .. tostring(restoreError)) })
+    local receipt = { protocol = 1, id = command.id, sessionId = config.id, instanceId = instance, buildKey = buildKey, error = restored and ('Proposal rejected; build restored: ' .. tostring(failure)) or ('Manual recovery required: recovery.xml. ' .. tostring(restoreError)) }
+    pcall(write, 'receipts/' .. command.id .. '.json', receipt)
+    write('ack.json', receipt)
     if not restored then error(restoreError) end
   end
   local function addonFrame(self)
@@ -489,29 +525,35 @@ return function(main, config)
     height = fullHeight
     local narrow = fullWidth < 980 or fullHeight < 620
     local isCollapsed = collapsed or narrow
-    width = wide and math.min(760, fullWidth - 620) or math.min(600, math.max(440, math.floor(fullWidth * 0.36)))
+    width = math.min(fullWidth - 420, math.max(380, panelWidth or math.min(600, math.floor(fullWidth * 0.36))))
     if fullWidth < 980 then width = math.max(320, fullWidth - 620) end
     x = isCollapsed and fullWidth - 108 or fullWidth - width
     local ok, errorMessage = pcall(panelFrame)
     if not ok then ui.status = 'Integration error: ' .. tostring(errorMessage) end
     local view = { x = x, y = 0, width = isCollapsed and 108 or width, height = isCollapsed and 44 or height }
     local cx, cy = GetCursorPos()
-    local inPanel = cx >= x and (not isCollapsed or cy <= 44)
+    local divider = not isCollapsed and math.abs(cx - x) <= 7
+    local inPanel = (cx >= x or divider or resizing) and (not isCollapsed or cy <= 44)
     if isCollapsed then host:SelectControl() end
     local events, remaining = {}, {}
     if not self.popups[1] then
       for _, event in ipairs(self.inputEvents) do
         local pointer = event.key and (event.key:find('BUTTON') or event.key:find('WHEEL'))
+        if not isCollapsed and event.key == 'LEFTBUTTON' and event.type == 'KeyDown' and divider then resizing = true; host:SelectControl() end
         local chat = host.controls.conversation
         local chatWheel = pointer and event.key:find('WHEEL') and not advanced and not isCollapsed and cx >= chat.x and cx < chat.x + chat.width and cy >= chat.y and cy < chat.y + chat.height
         if pointer and not inPanel then host:SelectControl() end
-        if chatWheel then
+        if resizing and pointer then
+          panelWidth = math.min(fullWidth - 420, math.max(380, fullWidth - cx))
+          if event.key == 'LEFTBUTTON' and event.type == 'KeyUp' then resizing = nil; pcall(write, 'panel-layout.json', { width = panelWidth }) end
+        elseif chatWheel then
           if event.type == 'KeyDown' then host.controls.chatScroll:Scroll(event.key == 'WHEELDOWN' and 1 or -1) end
         elseif inPanel and pointer or host.selControl and not pointer then events[#events + 1] = event else remaining[#remaining + 1] = event end
       end
       host:ProcessControlsInput(events, view)
       self.inputEvents = remaining
     end
+    if resizing then panelWidth = math.min(fullWidth - 420, math.max(380, fullWidth - cx)); lastText = nil end
     local getSize = GetVirtualScreenSize
     if not isCollapsed then GetVirtualScreenSize = function() return x, fullHeight end end
     local success, frameError = pcall(originalFrame, self)
@@ -521,17 +563,31 @@ return function(main, config)
     elseif not success then error(frameError) end
     if pendingAck then
       local command = pendingAck; pendingAck = nil
-      local saved, snapshotError = pcall(snapshot)
+      local saved, receipt = pcall(function()
+        local committed = snapshot()
+        assert(transaction.proposedRevision == transaction.beforeRevision or committed.revision ~= transaction.beforeRevision, 'PoB retained the previous build without applying the proposed changes.')
+        local result = { applied = true, buildKey = buildKey, committedXml = committed.xml, committedRevision = committed.revision }
+        local record = { protocol = 1, id = command.id, sessionId = config.id, instanceId = instance, buildKey = buildKey, result = result }
+        write('receipts/' .. command.id .. '.json', record)
+        return record
+      end)
       if saved then
         transaction = nil
-        write('ack.json', { protocol = 1, id = command.id, sessionId = config.id, result = { applied = true, buildKey = buildKey, committedXml = lastSnapshot.xml, committedRevision = lastSnapshot.revision } })
+        -- Commit receipt is durable before clearing the transaction. An ack
+        -- write failure cannot undo a successful commit or hide its outcome.
+        pcall(write, 'ack.json', receipt)
       else
-        recover(self, command, snapshotError)
+        recover(self, command, receipt)
       end
     end
     SetDrawLayer(90); SetViewport()
     SetDrawColor(0.035, 0.045, 0.06); DrawImage(nil, x, 0, fullWidth - x, isCollapsed and 44 or height)
     SetDrawColor(0.45, 0.34, 0.18); DrawImage(nil, x, 0, 1, isCollapsed and 44 or height)
+    if not isCollapsed then
+      SetDrawColor((divider or resizing) and 0.9 or 0.45, 0.55, 0.28)
+      DrawImage(nil, x + 2, math.floor(height / 2) - 20, 2, 40)
+      DrawImage(nil, x + 6, math.floor(height / 2) - 20, 2, 40)
+    end
     if isCollapsed then
       for name, control in pairs(host.controls) do control.shown = name == 'toggle' end
       host.controls.toggle.x = x + 8; host.controls.toggle.width = 92; host.controls.toggle.label = narrow and 'AI (resize)' or 'AI  [F8]'
@@ -540,7 +596,7 @@ return function(main, config)
     SetDrawColor(0.93, 0.81, 0.57); DrawString(x + 18, 14, 'LEFT', 22, 'VAR', 'PoB Assistant')
     SetDrawColor(0.4, 0.76, 0.65); DrawString(fullWidth - 166, 20, 'LEFT', 13, 'VAR', ui.settings.access == 'pob' and 'PoB tools only' or 'Full local access')
     SetDrawColor(0.7, 0.74, 0.8)
-    local status = disabled or ui.status or 'Ready'
+    local status = disabled or localError or (pendingAction and (pendingAction.type == 'apply' and 'Applying changes... waiting for PoB confirmation.' or 'Undoing changes... waiting for PoB confirmation.')) or ui.status or 'Ready'
     local statusLines = wrap(status, width - 48, 15)
     if ui.busy or ui.authPending then SetDrawColor(0.95, 0.72, 0.32) else SetDrawColor(0.35, 0.77, 0.61) end
     DrawImage(nil, x + 18, 53, 6, 6)
@@ -550,7 +606,7 @@ return function(main, config)
     DrawString(x + 18, 89, 'LEFT', 13, 'VAR', display('PoB ' .. tostring(launch.versionNumber) .. '  |  ' .. tostring(currentBuild() and currentBuild().buildName or 'Open a build')))
     for name, control in pairs(host.controls) do
       local configControl = name == 'executable' or name == 'effort' or name == 'research' or name == 'access' or name == 'save' or name == 'login' or name == 'authcheck' or name == 'updates'
-      local chatControl = name == 'conversation' or name == 'chatScroll' or name == 'copy' or name == 'latest' or name == 'wide' or name == 'input' or name == 'send' or name == 'clear' or name == 'apply' or name == 'details' or name == 'undo'
+      local chatControl = name == 'conversation' or name == 'chatScroll' or name == 'copy' or name == 'latest' or name == 'input' or name == 'send' or name == 'clear' or name == 'apply' or name == 'details' or name == 'undo'
       control.shown = configControl and advanced or not configControl and (not chatControl or not advanced)
       control.enabled = not disabled or name == 'toggle'
     end
@@ -558,33 +614,37 @@ return function(main, config)
     c.toggle.x = fullWidth - 48; c.toggle.width = 32; c.toggle.label = '>'
     c.provider.x = x + 14; c.model.x = x + 140; c.model.width = width - 154
     c.settings.x = x + 14
+    c.settings.width = 120
     c.settings.label = advanced and 'Back to chat' or 'Settings'
-    c.wide.x = x + 122; c.wide.label = wide and 'Narrower' or 'Wider'
-    c.copy.x = x + 212; c.latest.x = x + 326
+    c.copy.x = x + 144; c.latest.x = x + 266
     c.copy.label = showDetails and ui.proposal and 'Copy changes' or 'Copy reply'
     c.customModel.x = x + 124; c.customModel.width = width - 138
     local modelOption = c.model.list[c.model.selIndex]
     c.customModel.shown = modelOption and modelOption.custom or false
-    if c.customModel.shown then c.wide.shown = false; c.copy.shown = false; c.latest.shown = false end
+    if c.customModel.shown then c.copy.shown = false; c.latest.shown = false end
     c.provider.enabled = not ui.busy and not ui.authPending and not disabled
     c.model.enabled = c.provider.enabled; c.customModel.enabled = c.provider.enabled
     local proposalBar = ui.proposal ~= nil or ui.canUndo
     c.input.x = x + 14; c.input.y = height - 140; c.input.width = width - 28
-    c.send.x = x + 14; c.send.y = height - 43; c.send.enabled = not ui.busy and not disabled
-    c.cancel.x = x + 124; c.cancel.y = height - 43; c.cancel.enabled = ui.busy or ui.authPending
-    c.clear.x = fullWidth - 118; c.clear.y = height - 43
-    c.clear.enabled = not ui.busy and not ui.authPending and not disabled and (#(ui.messages or {}) > 0 or ui.proposal ~= nil or c.input.buf ~= '')
-    c.apply.x = x + 14; c.apply.y = height - 204; c.apply.enabled = ui.proposal ~= nil and not ui.busy and not disabled
-    c.details.x = x + 184; c.details.y = height - 204; c.details.label = showDetails and 'Summary' or 'Details'
-    c.undo.x = x + 284; c.undo.y = height - 204; c.undo.enabled = ui.canUndo and not ui.busy and not disabled
+    c.send.x = x + 14; c.send.y = height - 43; c.send.enabled = not ui.busy and not pendingAction and not disabled
+    c.cancel.x = x + 124; c.cancel.y = height - 43; c.cancel.enabled = ui.busy or ui.authPending; c.cancel.shown = c.cancel.enabled and not ui.action
+    c.clear.x = fullWidth - 130; c.clear.y = height - 43
+    c.clear.enabled = not ui.busy and not pendingAction and not ui.authPending and not disabled and (#(ui.messages or {}) > 0 or ui.proposal ~= nil)
+    c.apply.x = x + 14; c.apply.y = height - 204; c.apply.enabled = ui.proposal ~= nil and not pendingAction and not ui.busy and not disabled
+    c.apply.width = 146; c.details.x = x + 170; c.details.width = 84; c.undo.x = x + 264; c.undo.width = 102
+    c.apply.label = pendingAction and pendingAction.type == 'apply' and 'Applying...' or 'Apply changes'
+    c.details.y = height - 204; c.details.label = showDetails and 'Summary' or 'Details'
+    c.undo.y = height - 204; c.undo.enabled = ui.canUndo and not pendingAction and not ui.busy and not disabled
     c.apply.shown = not advanced and ui.proposal ~= nil; c.details.shown = c.apply.shown
     c.undo.shown = not advanced and ui.canUndo or false
     c.conversation.x = x + 14; c.conversation.width = width - 28
     c.conversation.height = math.max(70, c.input.y - c.conversation.y - (proposalBar and 82 or 38))
     c.chatScroll.x = fullWidth - 30; c.chatScroll.height = c.conversation.height
     c.executable.x = x + 14; c.executable.width = width - 28
+    c.executable.y = 206; c.effort.y = 264; c.research.y = 322; c.access.y = 380
     c.effort.x = x + 14; c.research.x = x + 14; c.research.width = width - 28; c.access.x = x + 14; c.access.width = width - 28; c.save.x = x + 14
     c.login.x = x + 14; c.authcheck.x = x + 158
+    c.save.y = 422; c.save.width = 160; c.login.y = 462; c.authcheck.y = 462
     c.updates.x = x + 14; c.updates.width = width - 28; c.updates.enabled = not ui.busy and not ui.authPending and not disabled
     c.login.enabled = not ui.busy and not ui.authPending and not disabled
     c.authcheck.enabled = not ui.busy and not ui.authPending and not disabled
@@ -601,13 +661,13 @@ return function(main, config)
     end
     if advanced then
       SetDrawColor(0.7, 0.74, 0.8)
-      DrawString(x + 14, 187, 'LEFT', 15, 'VAR', 'CLI path (optional)')
-      DrawString(x + 14, 251, 'LEFT', 15, 'VAR', 'Reasoning effort')
-      DrawString(x + 14, 315, 'LEFT', 15, 'VAR', 'Current sources')
-      DrawString(x + 14, 379, 'LEFT', 15, 'VAR', 'Agent access')
+      DrawString(x + 14, 184, 'LEFT', 15, 'VAR', 'CLI path (optional)')
+      DrawString(x + 14, 242, 'LEFT', 15, 'VAR', 'Reasoning effort')
+      DrawString(x + 14, 300, 'LEFT', 15, 'VAR', 'Current sources')
+      DrawString(x + 14, 358, 'LEFT', 15, 'VAR', 'Agent access')
       local selectedProvider = c.provider.selIndex == 2 and 'claude' or 'codex'
       local authText = ui.authPending and 'Complete sign-in in your browser.' or ui.auth and ui.auth.provider == selectedProvider and (ui.auth.signedIn and 'Signed in through your CLI.' or 'Not signed in.') or 'Login status not checked.'
-      DrawString(x + 14, 533, 'LEFT', 14, 'VAR', authText)
+      DrawString(x + 14, 544, 'LEFT', 14, 'VAR', authText)
     end
     host:DrawControls(view)
     if self.popups[1] then SetDrawColor(0, 0, 0, 0.6); DrawImage(nil, x, 0, width, height) end

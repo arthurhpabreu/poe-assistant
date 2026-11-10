@@ -90,7 +90,7 @@ assert(clear and clear.buildKey == sent.buildKey, 'clear request did not target 
 assert(c.input.buf == 'unfinished draft', 'draft was cleared before the backend confirmed')
 memory['/runtime/ui.json'] = encode({ sessionId='test-session', messages={}, settings=sent.settings, chatClearedAt=1000000 })
 now = now + 500; main:OnFrame()
-assert(c.input.buf == '' and build.state == 'original', 'clear acknowledgement did not reset the composer or modified the build')
+assert(c.input.buf == 'unfinished draft' and build.state == 'original', 'clearing history erased the composer draft or modified the build')
 memory['/runtime/ui.json'] = nil
 local baseline = assert(decodeFile('snapshot.json'))
 memory['/runtime/command.json'] = encode({ protocol=1, sessionId='test-session', id='apply-1', deadline=2000000, expectedBuildKey=baseline.buildKey, expectedXml='original', name='apply', args={xml='candidate'} })
@@ -103,4 +103,25 @@ memory['/runtime/command.json'] = encode({ protocol=1, sessionId='test-session',
 now = now + 1500; main:OnFrame()
 ack = assert(decodeFile('ack.json'))
 assert(not ack.error and #ack.result.nodes == 1, 'negative tree limit was not clamped')
+memory['/runtime/ui.json'] = encode({ sessionId='test-session', messages={}, settings=sent.settings, proposal={id='proposal-1',title='Test',operations={}} })
+now = now + 500; main:OnFrame()
+assert(not c.wide, 'obsolete Wider button remains')
+c.apply.selFunc(); c.apply.selFunc()
+local count, applyRequest = 0
+for file, content in pairs(memory) do if file:find('/inbox/') then local data = objects[content]; if data.type == 'apply' then count=count+1; applyRequest=data end end end
+assert(count == 1 and applyRequest.proposalId == 'proposal-1', 'duplicate click queued two applications or lost proposal identity')
+now = now + 500; main:OnFrame(); assert(not c.apply.enabled, 'Apply stayed enabled while awaiting confirmation')
+memory['/runtime/ui.json'] = encode({ sessionId='test-session', messages={}, settings=sent.settings, lastRequest={id='later-settings',state='complete'}, requestResults={[applyRequest.id]={state='failed'}} })
+now = now + 500; main:OnFrame()
+assert(c.send.enabled, 'a later status overwrote the application result and stranded pending state')
+c.settings.selFunc(); main:OnFrame()
+assert(c.save.y + c.save.height <= c.login.y and c.login.y + c.login.height <= c.updates.y, 'settings action buttons overlap')
+c.settings.selFunc()
+memory['/runtime/command.json'] = encode({ protocol=1, sessionId='test-session', id='apply-success', deadline=2000000, expectedBuildKey=baseline.buildKey, expectedXml='original', name='apply', args={xml='accepted'} })
+now = now + 1500; main:OnFrame()
+local receipt = assert(decodeFile('receipts/apply-success.json'))
+assert(receipt.result.applied and build.state == 'accepted', 'successful application has no durable commit receipt')
+local committedRevision = receipt.result.committedRevision
+build.state = 'manually edited'; now = now + 1500; main:OnFrame()
+assert(decodeFile('receipts/apply-success.json').result.committedRevision == committedRevision, 'a later manual edit changed the immutable receipt')
 return true

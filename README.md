@@ -4,9 +4,9 @@ A native AI chat panel on the **right side of Path of Building Community Fork**,
 
 ## Start here
 
-**Windows installer:** download `PoE-Assistant-Setup-0.2.1.exe` from [Releases](https://github.com/arthurhpabreu/poe-assistant/releases), run it, and select your existing `Path of Building.exe`. Node is bundled; install your own Claude Code or Codex CLI separately. The installer creates **PoE Assistant**, **Update PoE Assistant**, **Rollback PoE Assistant** and **Uninstall PoE Assistant** shortcuts. This repository is currently private: downloads/updates require repository access (GitHub CLI authentication for private updates).
+**Windows installer:** download `PoE-Assistant-Setup-0.2.2.exe` from [Releases](https://github.com/arthurhpabreu/poe-assistant/releases), run it, and select your existing `Path of Building.exe`. Node is bundled; install your own Claude Code or Codex CLI separately. The installer creates **PoE Assistant**, **Update PoE Assistant**, **Rollback PoE Assistant** and **Uninstall PoE Assistant** shortcuts. This repository is currently private: downloads/updates require repository access (GitHub CLI authentication for private updates).
 
-**Repository transfer:** version 0.2.1 uses `arthurhpabreu/poe-assistant` for package verification and updates. To migrate an existing 0.2.0 installation, close its PoE Assistant window and run the 0.2.1 installer with the same installation destination. Your build files and assistant settings are preserved. The 0.2.0 updater is pinned to the previous owner and cannot perform this ownership migration automatically.
+**Repository transfer:** versions 0.2.1 and later use `arthurhpabreu/poe-assistant` for package verification and updates. To migrate an existing 0.2.0 installation, close its PoE Assistant window and run the latest installer with the same installation destination. Your build files and assistant settings are preserved. The 0.2.0 updater is pinned to the previous owner and cannot perform this ownership migration automatically.
 
 The managed installation uses versioned releases under `%LOCALAPPDATA%\PoE Assistant`, with settings, request history and recovery data in a separate `data` directory. Updates verify archive and file SHA256 hashes, serialize installation, wait for the owned backend to stop, run compatibility/startup checks, and preserve the prior release for rollback. Save and close the assistant's PoB window before updating; unrelated PoB windows are preserved. Checksums detect corruption; this initial installer is not code-signed. Uninstall removes the owned addon entry point and shortcuts while preserving builds and recovery data.
 
@@ -20,6 +20,14 @@ For development from source:
 6. Describe your goals, league and budget, then send a message. **Ctrl+Enter** sends; **F8** collapses or expands the panel.
 
 No separate API key is required for the addon. Usage follows your selected provider's subscription, limits and billing.
+
+Drag the divider at the left edge of the assistant to resize it; the width is remembered. **Clear history** clears the conversation and pending proposal above the message box, while preserving your unsent draft and open build. Settings actions use separate rows, including at the minimum panel width.
+
+**Apply changes** immediately shows its pending state and blocks duplicate clicks. Completion and errors remain in the conversation. Each application writes a recovery backup and a commit receipt after PoB completes its first calculation frame; a lost acknowledgement can be recovered from that exact receipt. **Undo** rejects later manual build edits instead of overwriting them.
+
+Complete comparisons reuse successful exact measurements within the same analysis (up to 32), including the original build. Keys include exact XML, installed-engine fingerprint, verified clone digest and calculator code; changed builds/data miss the cache, and changed objectives/constraints are ranked again. Engine integrity is still checked at every comparison. Comparisons report fresh worker counts, cache hits and elapsed milliseconds. The panel no longer serializes complete candidate XML/calculator reports every draw frame. First-time calculations and provider reasoning still take time; model and reasoning settings remain yours.
+
+To reproduce a synthetic Arc benchmark without touching saved/open builds: `npm run benchmark:lab -- --label cached` and `npm run benchmark:lab -- --label uncached --no-cache`. This starts isolated PoB workers and records timings under this session's local application data. The benchmark's amulet is a synthetic attribute fixture, not a recommended game item.
 
 The model dropdown remembers a separate choice for each CLI. **Model: CLI default** keeps your CLI's default; Codex choices come from its local model catalog and refresh automatically, while Claude offers the current Sonnet, Opus and Haiku aliases. **Custom model...** accepts another model ID; save it in Settings or send your next message to use it. Model availability follows your CLI/account. Type every request in chat, including analysis and optimization.
 

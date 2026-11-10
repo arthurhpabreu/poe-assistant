@@ -1,6 +1,6 @@
 {
   "name": "poe-assistant",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "Native Claude/Codex assistant for Path of Building Community Fork",
@@ -10,6 +10,7 @@
     "start": "node src/server.mjs",
     "package:windows": "node scripts/package.mjs",
     "verify:lab": "node scripts/verify-build-lab.mjs",
+    "benchmark:lab": "node scripts/benchmark-lab.mjs",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "check": "node scripts/check.mjs"
   },
