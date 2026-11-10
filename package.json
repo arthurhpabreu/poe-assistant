@@ -1,8 +1,11 @@
 {
   "name": "poe-assistant",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/arthurhpabreu/poe-assistant.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arthurhpabreu/poe-assistant.git"
+  },
   "private": true,
   "type": "module",
   "description": "Native Claude/Codex assistant for Path of Building Community Fork",
@@ -16,7 +19,13 @@
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "check": "node scripts/check.mjs"
   },
-  "engines": { "node": ">=22" },
-  "dependencies": { "@xmldom/xmldom": "^0.8.11" },
-  "devDependencies": { "fengari": "^0.1.5" }
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.11"
+  },
+  "devDependencies": {
+    "fengari": "^0.1.5"
+  }
 }

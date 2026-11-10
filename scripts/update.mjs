@@ -20,6 +20,8 @@ const latest=await latestRelease();
 if(!newerVersion(latest.version,current.version)) { console.log(`PoE Assistant ${current.version} is up to date.`); process.exit(0); }
 const session=await readJson(current.session);
 const dir=path.join(destination,'data','updates',crypto.randomUUID());
+const invocation=crypto.randomUUID().replaceAll('-','');
+const diagnostics=path.join(destination,'data','setup-diagnostics',invocation);
 await fs.mkdir(dir,{recursive:true});
 const name=`poe-assistant-${latest.version}-win-x64.zip`;
 try {
@@ -37,8 +39,13 @@ try {
   if(sums?.repository!==repository || sums.version!==latest.version || !/^[a-f0-9]{64}$/.test(expected || '') || hash(await fs.readFile(path.join(dir,name)))!==expected) throw Error('Release checksum/identity mismatch. No version was changed.');
   const extracted=path.join(dir,'package');
   await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/extract-package.ps1'),'-Archive',path.join(dir,name),'-Destination',extracted],{cwd:dir,timeoutMs:180000});
-  await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',extracted,'-Pob',session.install,'-Destination',destination],{cwd:dir,timeoutMs:180000});
+  await fs.mkdir(diagnostics,{recursive:true});
+  await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(extracted,'scripts/deploy.ps1'),'-Source',extracted,'-Pob',session.install,'-Destination',destination,'-Diagnostics',diagnostics,'-Invocation',invocation],{cwd:dir,timeoutMs:180000});
+  const receipt=await readJson(path.join(diagnostics,'success.json'));
+  if(receipt?.status!=='success' || receipt.invocation!==invocation || receipt.version!==latest.version || !receipt.nonce) throw Error('Update did not return a verified activation receipt. See '+diagnostics);
   console.log(`Updated to PoE Assistant ${latest.version}. Open your usual Path of Building shortcut.`);
+} catch(error) {
+  console.error(`Update failed. Diagnostics: ${diagnostics}`);throw error;
 } finally {
   if(path.dirname(dir)!==path.join(destination,'data','updates')) throw Error('Invalid update cleanup path.');
   await fs.rm(dir,{recursive:true,force:true});

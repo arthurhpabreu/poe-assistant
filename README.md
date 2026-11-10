@@ -54,6 +54,12 @@ own freshly started backend. The check uses
 temporary settings and does not open your saved builds. Startup errors are
 shown in setup instead of leaving an apparently successful installation.
 
+If setup fails, its error window shows the failed step and cause. **Open log**
+opens the complete setup diagnostic; **Copy details** copies a support summary.
+Diagnostics remain in `%TEMP%\PoEAssistant-setup-<id>` after setup closes and
+include the process exit code and relevant startup logs. They do not collect
+your builds, chats, provider settings or credentials.
+
 > **On another PC:** install PoB and your chosen CLI there, then run this
 > installer and sign in there. Copying old Windows shortcuts does not install
 > the addon or its provider. This is a Windows x64 community addon; the current

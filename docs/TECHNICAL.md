@@ -122,6 +122,20 @@ Real provider/native checks are available in `scripts/verify-*.mjs`. Use an
 isolated PoB copy and disposable build; mutation checks can change that build.
 `scripts/verify-installer.mjs --pob <isolated-directory>` checks deployment,
 reinstall, settings preservation, failed-activation rollback and tampering.
+It also runs the actual packaged EXE, including a repacked broken native addon,
+and checks persistent diagnostics and the invocation-bound success receipt.
+`tests/setup.test.mjs` compiles the installer with disposable payloads to test
+partial errors without newlines, inherited pipes retained by descendants,
+missing/mismatched receipts, and separate activation/rollback failures.
+
+The EXE drains redirected output incrementally and waits at most one second
+for remaining pipe data after PowerShell exits. `setup-entry.ps1` records the
+primary ErrorRecord (phase, position, exception and script stack) outside the
+extraction directory, before rollback can overwrite runtime evidence. Cleanup
+errors are recorded separately. Setup success requires exit zero and a fresh
+receipt matching this invocation, version, target, release and native probe.
+For unattended installs, `--silent --diagnostics <directory>` retains a unique
+diagnostic subfolder without showing dialogs. No automatic log upload occurs.
 
 `npm run benchmark:lab -- --label cached` and a second run with
 `--label uncached --no-cache` reproduce a synthetic Arc comparison without

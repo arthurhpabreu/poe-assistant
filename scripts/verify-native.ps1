@@ -1,5 +1,6 @@
-param([Parameter(Mandatory=$true)][string]$Pob, [Parameter(Mandatory=$true)][string]$Destination, [string]$Shortcut, [int]$TimeoutSeconds=45)
+param([Parameter(Mandatory=$true)][string]$Pob, [Parameter(Mandatory=$true)][string]$Destination, [string]$Shortcut, [int]$TimeoutSeconds=45, [string]$Diagnostics)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'setup-diagnostics.ps1')
 $nonce = [Guid]::NewGuid().ToString()
 $folder = Join-Path $Destination ('verification/' + $nonce)
 New-Item -ItemType Directory -Path (Join-Path $folder 'runtime/inbox'),(Join-Path $folder 'runtime/receipts'),(Join-Path $folder 'user/Builds') -Force | Out-Null
@@ -12,6 +13,7 @@ $request = @{nonce=$nonce;sessionId=$probeId;sessionFile=$sessionFile;startBacke
 [IO.File]::WriteAllText((Join-Path $folder 'request.json'), ($request | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 $previousNonce = $env:POE_ASSISTANT_PROBE
 $probe = $null
+$primaryFailure = $null
 try {
     $env:POE_ASSISTANT_PROBE = $nonce
     if ($Shortcut) {
@@ -53,11 +55,22 @@ try {
     $probe.WaitForExit(5000) | Out-Null
     [IO.File]::WriteAllText((Join-Path $Destination 'native-verification.json'), ($result | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
     Write-Output ('PoB verified: assistant rendered through ' + $(if ($Shortcut) { $Shortcut } else { 'its native entry point' }))
+} catch {
+    $primaryFailure = $_
+    Save-SetupFailure $_
+    foreach ($name in @('result.json','runtime/startup.json','runtime/backend-start-error.json','runtime/backend-error.log','runtime/backend-output.log')) { Save-SetupEvidence $folder $name ('Native probe ' + $name) }
+    throw
 } finally {
     $env:POE_ASSISTANT_PROBE = $previousNonce
-    [IO.File]::WriteAllText((Join-Path $folder 'verification-complete.json'), '{"complete":true}')
-    [IO.File]::WriteAllText((Join-Path $folder 'runtime/shutdown.json'), ('{"sessionId":"' + $probeId + '"}'))
-    for ($attempt=0; $attempt -lt 100 -and (Test-Path -LiteralPath (Join-Path $folder 'runtime/backend.lock')); $attempt++) { Start-Sleep -Milliseconds 100 }
-    # Only this exact process was created by setup. Never close existing windows.
-    if ($probe -and -not $probe.HasExited) { Stop-Process -Id $probe.Id -ErrorAction SilentlyContinue }
+    $cleanupFailure = $null
+    try {
+        [IO.File]::WriteAllText((Join-Path $folder 'verification-complete.json'), '{"complete":true}')
+        [IO.File]::WriteAllText((Join-Path $folder 'runtime/shutdown.json'), ('{"sessionId":"' + $probeId + '"}'))
+        for ($attempt=0; $attempt -lt 100 -and (Test-Path -LiteralPath (Join-Path $folder 'runtime/backend.lock')); $attempt++) { Start-Sleep -Milliseconds 100 }
+    } catch { $cleanupFailure = $_; Save-SetupCleanupFailure $_ }
+    finally {
+        # Only this exact process was created by setup. Never close existing windows.
+        if ($probe -and -not $probe.HasExited) { Stop-Process -Id $probe.Id -ErrorAction SilentlyContinue }
+    }
+    if ($cleanupFailure -and -not $primaryFailure) { throw $cleanupFailure }
 }

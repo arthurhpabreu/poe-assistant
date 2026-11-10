@@ -1,5 +1,8 @@
-param([Parameter(Mandatory=$true)][string]$Source, [Parameter(Mandatory=$true)][string]$Pob, [string]$Destination, [switch]$NoShortcut, [string[]]$ShortcutRoots)
+param([Parameter(Mandatory=$true)][string]$Source, [Parameter(Mandatory=$true)][string]$Pob, [string]$Destination, [switch]$NoShortcut, [string[]]$ShortcutRoots, [string]$Diagnostics, [string]$Invocation)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'setup-diagnostics.ps1')
+$script:setupCleanupErrors = @()
+Write-SetupPhase 'Checking installation paths'
 function ChildPath([string]$Parent, [string]$Relative) {
     $base = [IO.Path]::GetFullPath($Parent).TrimEnd('\') + '\'
     $target = [IO.Path]::GetFullPath((Join-Path $Parent $Relative))
@@ -54,7 +57,9 @@ $Pob = (Resolve-Path -LiteralPath $Pob).Path; NoLinks $Pob
 if (-not $Destination) { $Destination = Join-Path $Pob 'PoEAssistant' }
 $Destination = [IO.Path]::GetFullPath($Destination).TrimEnd('\'); NoLinks $Destination
 if (-not (Test-Path -LiteralPath (Join-Path $Pob 'Path of Building.exe'))) { throw 'Select an existing Path of Building Community installation.' }
+Write-SetupPhase 'Verifying package checksums'
 $manifest = VerifyPackage $Source
+Write-SetupPhase 'Checking whether PoB is closed'
 $windows = @(Get-CimInstance Win32_Process -Filter "Name='Path of Building.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq (Join-Path $Pob 'Path of Building.exe') })
 if ($windows.Count) { throw 'Save your build and close Path of Building before installing. Setup will never close it or discard your changes.' }
 $mutexHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Pob.ToLowerInvariant()))).Replace('-','')
@@ -62,6 +67,7 @@ $mutex = New-Object Threading.Mutex($false, ('Local\PoEAssistant-' + $mutexHash)
 if (-not $mutex.WaitOne(0)) { throw 'Another installation/update is in progress for this PoB.' }
 $stage = $null; $old = $null; $activated = $false; $integrationInstalled = $false; $linksChanged = $false
 try {
+    Write-SetupPhase 'Preparing addon data and existing shortcuts'
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $data = ChildPath $Destination 'data'; New-Item -ItemType Directory -Path $data -Force | Out-Null
     $sessionFile = Join-Path $data 'session.json'
@@ -92,6 +98,7 @@ try {
     $ownerFile = Join-Path $data 'owner.json'
     if (-not (Test-Path -LiteralPath $ownerFile)) { AtomicJson $ownerFile @{id=('poe-assistant-' + [Guid]::NewGuid().ToString());owner='PoE Assistant';destination=$Destination;pob=$Pob} }
     if (Test-Path -LiteralPath $sessionFile) { $session = Get-Content -Encoding UTF8 -Raw -LiteralPath $sessionFile | ConvertFrom-Json; StopBackend $session }
+    Write-SetupPhase 'Staging the new release'
     $pointer = Join-Path $Destination 'current.json'
     if (Test-Path -LiteralPath $pointer) { $old = Get-Content -Encoding UTF8 -Raw -LiteralPath $pointer | ConvertFrom-Json }
     $releases = ChildPath $Destination 'releases'; New-Item -ItemType Directory -Path $releases -Force | Out-Null
@@ -101,8 +108,10 @@ try {
     Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $stage -Recurse
     $null = VerifyPackage $stage
     $node = Join-Path $stage 'runtime/node.exe'
+    Write-SetupPhase 'Checking bundled Node runtime'
     & $node --check (Join-Path $stage 'src/server.mjs'); if ($LASTEXITCODE) { throw 'Backend syntax check failed.' }
     & $node --check (Join-Path $stage 'src/build-lab.mjs'); if ($LASTEXITCODE) { throw 'Calculator syntax check failed.' }
+    Write-SetupPhase 'Installing the native PoB entry point'
     & $node (Join-Path $stage 'scripts/install.mjs') --pob $Pob --state $data --managed-destination $Destination --no-shortcut
     if ($LASTEXITCODE) { throw 'PoB addon compatibility/install check failed.' }
     $integrationInstalled = $true
@@ -113,25 +122,44 @@ try {
         Copy-Item -LiteralPath (Join-Path $stage ('scripts/installed-' + $name.ToLowerInvariant() + '.ps1')) -Destination (Join-Path $Destination ($name + '.ps1')) -Force
     }
     AtomicJson $pointer $entry; $activated = $true
+    Write-SetupPhase 'Starting the assistant backend'
     & (Join-Path $stage 'scripts/start-backend.ps1') -Session $sessionFile
     if (-not $NoShortcut) {
+        Write-SetupPhase 'Integrating the usual PoB shortcut'
         & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Install
         if (-not $?) { throw 'Could not integrate the existing PoB shortcut.' }
         $linksChanged = $true
         $activeLinks = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $data 'active-shortcuts.json') | ConvertFrom-Json
         $verifiedShortcut = @($activeLinks | Select-Object -First 1)[0]
         if (-not $verifiedShortcut) { throw 'No existing PoB shortcut is available for native verification.' }
-        & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination -Shortcut $verifiedShortcut
+        Write-SetupPhase 'Verifying the real PoB panel and backend connection'
+        & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination -Shortcut $verifiedShortcut -Diagnostics $Diagnostics
+        Write-SetupPhase 'Removing recognized legacy addon shortcuts'
         & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Cleanup
     } else {
-        & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination
+        Write-SetupPhase 'Verifying the real PoB panel and backend connection'
+        & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination -Diagnostics $Diagnostics
     }
+    if ($Diagnostics) {
+        Write-SetupPhase 'Confirming verified installation receipt'
+        $proof = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $Destination 'native-verification.json') | ConvertFrom-Json
+        if ($proof.stage -ne 'ready' -or -not $proof.backendVerified -or -not $proof.backendConnected -or $proof.release -ne $entry.releaseName -or -not $proof.nonce) { throw 'Native verification did not produce a receipt for the activated release.' }
+        AtomicJson (Join-Path $Diagnostics 'success.json') @{status='success';invocation=$Invocation;version=$manifest.version;pob=$Pob;destination=$Destination;release=$entry.releaseName;nonce=$proof.nonce;time=[DateTime]::UtcNow.ToString('o')}
+    }
+    Write-SetupPhase 'Installation completed and verified'
     Write-Output ('Installed PoE Assistant ' + $manifest.version + '. Open your usual Path of Building shortcut.')
 } catch {
     $failure = $_
-    if ($activated -and $session) { StopBackend $session }
-    if ($linksChanged -and -not $old) { & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Restore }
-    if ($old -and (Test-Path -LiteralPath $old.release)) {
+    Save-SetupFailure $failure
+    Save-SetupEvidence $Destination 'startup-error.log' 'Native bootstrap failure'
+    if ($session) {
+        foreach ($name in @('startup.json','backend-start-error.json','backend-error.log','backend-output.log')) { Save-SetupEvidence $session.runtime $name ('Backend ' + $name) }
+    }
+    # Keep the activation error even if rollback encounters a separate failure.
+    $canRestore = $true
+    if ($activated -and $session) { try { StopBackend $session } catch { $canRestore = $false; Save-SetupCleanupFailure $_ } }
+    if ($canRestore -and $linksChanged -and -not $old) { try { & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Restore } catch { Save-SetupCleanupFailure $_ } }
+    try { if ($canRestore -and $old -and (Test-Path -LiteralPath $old.release)) {
         $oldNode = Join-Path $old.release 'runtime/node.exe'
         $restore = @('--pob',$Pob,'--state',$data,'--no-shortcut')
         if ($old.direct) { $restore += @('--managed-destination',$Destination) }
@@ -145,10 +173,12 @@ try {
             $restoredSession = Get-Content -Encoding UTF8 -Raw -LiteralPath $sessionFile | ConvertFrom-Json
             Remove-Item -LiteralPath (Join-Path $restoredSession.runtime 'shutdown.json') -Force -ErrorAction SilentlyContinue
             & (Join-Path $old.release 'scripts/start-backend.ps1') -Session $sessionFile
-        }
-    } elseif ($integrationInstalled) {
+        } else { throw 'The previous addon release could not be restored. See the original activation error and runtime logs.' }
+    } elseif ($canRestore -and $integrationInstalled) {
         & (Join-Path $stage 'runtime/node.exe') (Join-Path $stage 'scripts/install.mjs') --pob $Pob --state $data --uninstall --no-shortcut
+        if ($LASTEXITCODE) { throw 'The incomplete native integration could not be removed.' }
         Remove-Item -LiteralPath (Join-Path $Destination 'current.json') -Force -ErrorAction SilentlyContinue
-    }
+    } } catch { Save-SetupCleanupFailure $_ }
+    if ($script:setupCleanupErrors.Count) { throw ($failure.Exception.Message + "`r`nRecovery incomplete: " + ($script:setupCleanupErrors -join '; ')) }
     throw $failure
 } finally { $mutex.ReleaseMutex(); $mutex.Dispose() }

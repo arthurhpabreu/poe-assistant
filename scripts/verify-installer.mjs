@@ -28,6 +28,8 @@ await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command',`. 
 const version=(await readJson(path.join(root,'package.json'))).version;
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/extract-package.ps1'),'-Archive',path.join(root,'dist',`poe-assistant-${version}-win-x64.zip`),'-Destination',source]);
 const deploy=()=>runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',source,'-Pob',pob,'-Destination',destination,'-ShortcutRoots',links],{timeoutMs:60000});
+const exeDiagnostics=path.join(dir,'exe-diagnostics');await fs.mkdir(exeDiagnostics);
+const installExe=exe=>runProcess(exe,['--silent','--pob',pob,'--no-shortcut','--diagnostics',exeDiagnostics],{timeoutMs:90000});
 await deploy(); const first=await readJson(path.join(destination,'current.json'));
 const session=await readJson(first.session);
 assert.equal(session.id,'pobhelper-migration-fixture');
@@ -41,12 +43,26 @@ const packageManifest=path.join(source,'release-manifest.json');
 const originalManifest=await readJson(packageManifest);
 await fs.writeFile(addonFile,'error("Deliberate native activation failure")\n');
 const broken=structuredClone(originalManifest);broken.files.find(f=>f.path==='addon/PobHelper.lua').sha256=hash(await fs.readFile(addonFile));await atomicWrite(packageManifest,broken);
-await assert.rejects(deploy(),/Deliberate native activation failure/);
+// Exercise the actual distribution entry point, including embedded extraction,
+// stdout/stderr capture, durable error details and native failure rollback.
+const brokenArchive=path.join(dir,'broken-native.zip'),brokenExe=path.join(dir,'broken-native.exe');
+await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/compress-package.ps1'),'-Source',source,'-Destination',brokenArchive],{timeoutMs:60000});
+await runProcess(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/platform:x64',`/out:${brokenExe}`,`/resource:${brokenArchive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Web.Extensions.dll',path.join(root,'scripts/Installer.cs')]);
+await assert.rejects(installExe(brokenExe),/Deliberate native activation failure/);
+const failedDiagnostic=path.join(exeDiagnostics,(await fs.readdir(exeDiagnostics))[0]);
+assert.match((await readJson(path.join(failedDiagnostic,'failure.json'))).error,/Deliberate native activation failure/);
+assert.match(await fs.readFile(path.join(failedDiagnostic,'setup.log'),'utf8'),/EVIDENCE Native probe/);
+assert.equal(await readJson(path.join(failedDiagnostic,'success.json')),null);
 assert.equal((await readJson(path.join(destination,'current.json'))).release,first.release);
 await fs.writeFile(addonFile,originalAddon);await atomicWrite(packageManifest,originalManifest);
 assert.equal(await fs.readFile(path.join(session.runtime,'backups','migration.xml'),'utf8'),'<test-backup/>');
 assert.deepEqual(await fs.readdir(links),['Path of Building Community.lnk']);
-await deploy(); const upgraded=await readJson(path.join(destination,'current.json'));
+await installExe(path.join(root,'dist',`PoE-Assistant-Setup-${version}.exe`)); const upgraded=await readJson(path.join(destination,'current.json'));
+const successDirectories=(await fs.readdir(exeDiagnostics)).filter(name=>path.join(exeDiagnostics,name)!==failedDiagnostic);
+assert.equal(successDirectories.length,1);
+const receipt=await readJson(path.join(exeDiagnostics,successDirectories[0],'success.json'));
+assert.equal(receipt.status,'success');assert.equal(receipt.version,version);assert.equal(receipt.release,upgraded.releaseName);
+assert.equal(receipt.nonce,(await readJson(path.join(destination,'native-verification.json'))).nonce);
 assert.equal(upgraded.previous,first.release);assert.notEqual(upgraded.release,first.release);
 assert.deepEqual(await readJson(path.join(session.state,'settings.json')),{provider:'codex',custom:'preserve-test'});
 // Simulate a trusted release whose health check fails after activation.
@@ -68,5 +84,17 @@ await atomicWrite(path.join(session.runtime,'shutdown.json'),{sessionId:session.
 const xml='<PathOfBuilding><Build level="1" characterLevelAutoMode="false" targetVersion="3_0" className="Scion" ascendClassName="None"/><Tree activeSpec="1"><Spec treeVersion="3_29" classId="0" ascendClassId="0" nodes=""/></Tree><Items/><Skills/><Config/><Notes/></PathOfBuilding>';
 const calculated=await calculateBuild({engine:pob,xml,dir:path.join(pob,'requests','installation-verification')});
 assert.equal(calculated.report.level,1);assert.equal(calculated.report.output.Life,60);assert.equal(calculated.report.validation.errors.length,0);
-await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,nativeRenderConfirmed:true,nativeFailureRejected:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
+// A direct script caller without -Diagnostics must still see both causes when
+// activation and restoration fail. The previous immutable fixture is repaired
+// in finally, then its verified release is installed again through deployment.
+const restoreScript=path.join(upgraded.release,'scripts/install.mjs'),restoreOriginal=await fs.readFile(restoreScript,'utf8');
+await fs.writeFile(addonFile,originalAddon);await atomicWrite(manifestFile,manifest);
+try {
+  await fs.appendFile(restoreScript,'\nthrow Error("Deliberate rollback failure");\n');
+  await assert.rejects(deploy(),error=>error.message.includes('Deliberate activation failure') && error.message.includes('Recovery incomplete'));
+} finally { await fs.writeFile(restoreScript,restoreOriginal); }
+await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',upgraded.release,'-Pob',pob,'-Destination',destination,'-ShortcutRoots',links],{timeoutMs:90000});
+const repaired=await readJson((await readJson(path.join(destination,'current.json'))).session);
+await atomicWrite(path.join(repaired.runtime,'shutdown.json'),{sessionId:repaired.id});
+await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,nativeRenderConfirmed:true,nativeFailureRejected:true,packagedExeFailureDiagnostic:true,packagedExeSuccessReceipt:true,directRollbackFailureReported:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
 console.log('Installer deployment, legacy settings/backups migration, shortcut reuse/cleanup, reinstall, activation rollback, corruption rejection and reopening after shutdown passed.');
