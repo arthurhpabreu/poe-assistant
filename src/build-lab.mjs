@@ -93,7 +93,8 @@ export async function prepareEngine(install, cacheDir, version, signal) {
 function workerLauncher(engine, runDir) {
   const literal = value => JSON.stringify(value.replaceAll('\\', '/'));
   return `#@ SimpleGraphic
-local workerDir = ${literal(runDir)}
+ local workerDir = ${literal(path.relative(engine, runDir))}
+SetWorkDir(GetScriptPath())
 local originalPLoad = PLoadModule
 local function finish(result)
  local json = require('dkjson')
@@ -124,7 +125,7 @@ PLoadModule = function(name, ...)
     build:Init(nil, 'PoE Assistant candidate', xml, false, nil)
     assert(build.savers and build.targetVersion == liveTargetVersion and build.calcsTab.mainEnv and not self.newMode, 'Build initialization failed or requires conversion.')
     assert(#self.popups == 0, 'Build initialization opened an error or conversion dialog.')
-    local lab = assert(loadfile(${literal(path.join(root, 'addon/BuildLab.lua'))}))()
+    local lab = assert(loadfile(workerDir .. '/BuildLab.lua'))()
     local inspections = {}
     local inspectFile = io.open(workerDir .. '/inspect.json', 'rb')
     if inspectFile then
@@ -141,7 +142,7 @@ PLoadModule = function(name, ...)
  end
  return err, object
 end
-assert(loadfile(${literal(path.join(engine, 'Launch.lua'))}))()
+assert(loadfile('Launch.lua'))()
 launch.CheckForUpdate = function() end
 launch.ApplyUpdate = function() error('Updates are disabled in the isolated calculator.') end
 launch.OnExit = function() end
@@ -159,11 +160,12 @@ export async function calculateBuild({ engine, xml, dir, signal, inspections }) 
   parseBuild(xml);
   await fs.mkdir(path.join(dir, 'user', 'Builds'), { recursive: true });
   await atomicWrite(path.join(dir, 'build.xml'), xml);
+  await fs.copyFile(path.join(root, 'addon/BuildLab.lua'), path.join(dir, 'BuildLab.lua'));
   if (inspections) await atomicWrite(path.join(dir,'inspect.json'),inspections);
   const launcher = path.join(engine, `AssistantWorker-${crypto.randomUUID()}.lua`);
   await atomicWrite(launcher, workerLauncher(engine, dir));
   try {
-    await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(root, 'scripts/run-worker.ps1'), '-Executable', path.join(engine, 'Path of Building.exe'), '-Script', launcher, '-Directory', engine], { cwd: engine, signal, timeoutMs: 180_000 });
+    await runProcess(path.join(engine, 'Path of Building.exe'), [launcher], { cwd: engine, signal, timeoutMs: 180_000 });
   } finally { await fs.rm(launcher, { force: true }); }
   const result = await readJson(path.join(dir, 'result.json'));
   if (!result?.ok || !result.report?.output) throw Error(result?.error || 'The isolated PoB calculator did not return a result.');

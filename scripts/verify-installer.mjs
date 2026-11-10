@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { atomicWrite,readJson,hash } from '../src/files.mjs';
 import { runProcess } from '../src/process.mjs';
+import { calculateBuild } from '../src/build-lab.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const arg=process.argv.indexOf('--pob');
@@ -23,7 +24,7 @@ await atomicWrite(path.join(legacyState,'settings.json'),{provider:'codex',custo
 await fs.writeFile(path.join(legacyRuntime,'backups','migration.xml'),'<test-backup/>');
 await fs.writeFile(path.join(legacy,'Launch.ps1'),'# owned legacy fixture');
 const literal=value=>"'"+value.replaceAll("'","''")+"'";
-await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command',`$shell=New-Object -ComObject WScript.Shell; $link=$shell.CreateShortcut(${literal(path.join(links,'Path of Building Community.lnk'))}); $link.TargetPath=${literal(path.join(pob,'Path of Building.exe'))}; $link.WorkingDirectory=${literal(pob)}; $link.Save(); $link=$shell.CreateShortcut(${literal(path.join(links,'PoE Assistant abcdef12.lnk'))}); $link.TargetPath=Join-Path $PSHOME 'powershell.exe'; $link.Arguments='-NoProfile -File "'+${literal(path.join(legacy,'Launch.ps1'))}+'"'; $link.Save()`]);
+await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command',`. ${literal(path.join(root,'scripts/shortcut-api.ps1'))}; $link=[PoeAssistantShortcut]::Open(${literal(path.join(links,'Path of Building Community.lnk'))}); $link.TargetPath=${literal(path.join(pob,'Path of Building.exe'))}; $link.WorkingDirectory=${literal(pob)}; $link.Save(); $link=[PoeAssistantShortcut]::Open(${literal(path.join(links,'PoE Assistant abcdef12.lnk'))}); $link.TargetPath=Join-Path $PSHOME 'powershell.exe'; $link.Arguments='-NoProfile -File "'+${literal(path.join(legacy,'Launch.ps1'))}+'"'; $link.Save()`]);
 const version=(await readJson(path.join(root,'package.json'))).version;
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/extract-package.ps1'),'-Archive',path.join(root,'dist',`poe-assistant-${version}-win-x64.zip`),'-Destination',source]);
 const deploy=()=>runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/deploy.ps1'),'-Source',source,'-Pob',pob,'-Destination',destination,'-ShortcutRoots',links],{timeoutMs:60000});
@@ -31,6 +32,18 @@ await deploy(); const first=await readJson(path.join(destination,'current.json')
 const session=await readJson(first.session);
 assert.equal(session.id,'pobhelper-migration-fixture');
 assert.deepEqual(await readJson(path.join(session.state,'settings.json')),{provider:'codex',custom:'preserve-test'});
+const proof=await readJson(path.join(destination,'native-verification.json'));
+assert.equal(proof.stage,'ready');assert.equal(proof.release,first.releaseName);assert(proof.processId>0 && proof.nonce && proof.backendVerified);
+// A healthy Node process is insufficient: a broken native addon must reject
+// setup and restore the previous release/shortcut rather than claim success.
+const addonFile=path.join(source,'addon/PobHelper.lua'),originalAddon=await fs.readFile(addonFile,'utf8');
+const packageManifest=path.join(source,'release-manifest.json');
+const originalManifest=await readJson(packageManifest);
+await fs.writeFile(addonFile,'error("Deliberate native activation failure")\n');
+const broken=structuredClone(originalManifest);broken.files.find(f=>f.path==='addon/PobHelper.lua').sha256=hash(await fs.readFile(addonFile));await atomicWrite(packageManifest,broken);
+await assert.rejects(deploy(),/Deliberate native activation failure/);
+assert.equal((await readJson(path.join(destination,'current.json'))).release,first.release);
+await fs.writeFile(addonFile,originalAddon);await atomicWrite(packageManifest,originalManifest);
 assert.equal(await fs.readFile(path.join(session.runtime,'backups','migration.xml'),'utf8'),'<test-backup/>');
 assert.deepEqual(await fs.readdir(links),['Path of Building Community.lnk']);
 await deploy(); const upgraded=await readJson(path.join(destination,'current.json'));
@@ -52,5 +65,8 @@ await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.j
 assert.equal(await readJson(path.join(session.runtime,'shutdown.json')),null,'A deliberate stop prevented a future PoB launch.');
 const reopened=await readJson(path.join(session.runtime,'heartbeat.json'));assert(reopened?.pid>0 && Date.now()-reopened.time<5000);
 await atomicWrite(path.join(session.runtime,'shutdown.json'),{sessionId:session.id});
-await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
+const xml='<PathOfBuilding><Build level="1" characterLevelAutoMode="false" targetVersion="3_0" className="Scion" ascendClassName="None"/><Tree activeSpec="1"><Spec treeVersion="3_29" classId="0" ascendClassId="0" nodes=""/></Tree><Items/><Skills/><Config/><Notes/></PathOfBuilding>';
+const calculated=await calculateBuild({engine:pob,xml,dir:path.join(pob,'requests','installation-verification')});
+assert.equal(calculated.report.level,1);assert.equal(calculated.report.output.Life,60);assert.equal(calculated.report.validation.errors.length,0);
+await atomicWrite(path.join(dir,'verified.json'),{initialInstall:true,nativeRenderConfirmed:true,nativeFailureRejected:true,legacyMigration:true,legacyShortcutsRemoved:true,reinstall:true,settingsPreserved:true,activationFailureRollback:true,restoredBackendHealthy:true,tamperingRejected:true,reopenAfterShutdown:true});
 console.log('Installer deployment, legacy settings/backups migration, shortcut reuse/cleanup, reinstall, activation rollback, corruption rejection and reopening after shutdown passed.');

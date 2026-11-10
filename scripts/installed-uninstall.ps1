@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 try {
     . (Join-Path $PSScriptRoot 'Common.ps1')
     $current = GetAssistantCurrent
-    $session = Get-Content -Raw -LiteralPath $current.session | ConvertFrom-Json
+    $session = Get-Content -Encoding UTF8 -Raw -LiteralPath $current.session | ConvertFrom-Json
     if (@(Get-CimInstance Win32_Process -Filter "Name='Path of Building.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $session.install 'Path of Building.exe') }).Count) { throw 'Save your build and close Path of Building first.' }
     $records = Join-Path $session.state 'pob-shortcuts.json'
     & (Join-Path $current.release 'scripts/integrate-shortcuts.ps1') -Pob $session.install -Launcher $session.launcher -Records $records -Mode Restore

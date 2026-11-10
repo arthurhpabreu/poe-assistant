@@ -16,7 +16,7 @@ function NoLinks([string]$Path) {
 }
 function VerifyPackage([string]$Folder) {
     NoLinks $Folder
-    $manifest = Get-Content -Raw -LiteralPath (Join-Path $Folder 'release-manifest.json') | ConvertFrom-Json
+    $manifest = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $Folder 'release-manifest.json') | ConvertFrom-Json
     if ($manifest.repository -ne 'arthurhpabreu/poe-assistant' -or $manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Unexpected release identity/version.' }
     $known = @{}
     foreach ($entry in $manifest.files) {
@@ -43,7 +43,7 @@ function AtomicJson([string]$File, $Value) {
 function StopBackend($session) {
     AtomicJson (Join-Path $session.runtime 'shutdown.json') @{sessionId=$session.id}
     for ($attempt=0; $attempt -lt 200 -and (Test-Path -LiteralPath (Join-Path $session.runtime 'backend.lock')); $attempt++) {
-        $backendPid = [int](Get-Content -Raw -LiteralPath (Join-Path $session.runtime 'backend.lock') -ErrorAction SilentlyContinue)
+        $backendPid = [int](Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $session.runtime 'backend.lock') -ErrorAction SilentlyContinue)
         if (-not (Get-Process -Id $backendPid -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath (Join-Path $session.runtime 'backend.lock') -Force -ErrorAction SilentlyContinue; break }
         Start-Sleep -Milliseconds 100
     }
@@ -73,8 +73,8 @@ try {
     if (-not (Test-Path -LiteralPath $sessionFile)) {
         $candidates = @($legacy | Where-Object legacyDestination | Select-Object -ExpandProperty legacyDestination -Unique)
         foreach ($candidate in $candidates) {
-            $oldPointer = Get-Content -Raw -LiteralPath (Join-Path $candidate 'current.json') | ConvertFrom-Json
-            $previousSession = Get-Content -Raw -LiteralPath $oldPointer.session | ConvertFrom-Json
+            $oldPointer = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $candidate 'current.json') | ConvertFrom-Json
+            $previousSession = Get-Content -Encoding UTF8 -Raw -LiteralPath $oldPointer.session | ConvertFrom-Json
             StopBackend $previousSession
             Copy-Item -LiteralPath $oldPointer.session -Destination $sessionFile
             $settings = Join-Path $previousSession.state 'settings.json'
@@ -91,9 +91,9 @@ try {
     }
     $ownerFile = Join-Path $data 'owner.json'
     if (-not (Test-Path -LiteralPath $ownerFile)) { AtomicJson $ownerFile @{id=('poe-assistant-' + [Guid]::NewGuid().ToString());owner='PoE Assistant';destination=$Destination;pob=$Pob} }
-    if (Test-Path -LiteralPath $sessionFile) { $session = Get-Content -Raw -LiteralPath $sessionFile | ConvertFrom-Json; StopBackend $session }
+    if (Test-Path -LiteralPath $sessionFile) { $session = Get-Content -Encoding UTF8 -Raw -LiteralPath $sessionFile | ConvertFrom-Json; StopBackend $session }
     $pointer = Join-Path $Destination 'current.json'
-    if (Test-Path -LiteralPath $pointer) { $old = Get-Content -Raw -LiteralPath $pointer | ConvertFrom-Json }
+    if (Test-Path -LiteralPath $pointer) { $old = Get-Content -Encoding UTF8 -Raw -LiteralPath $pointer | ConvertFrom-Json }
     $releases = ChildPath $Destination 'releases'; New-Item -ItemType Directory -Path $releases -Force | Out-Null
     $releaseName = $manifest.version + '-' + [Guid]::NewGuid().ToString('N')
     $stage = ChildPath $releases $releaseName
@@ -106,7 +106,7 @@ try {
     & $node (Join-Path $stage 'scripts/install.mjs') --pob $Pob --state $data --managed-destination $Destination --no-shortcut
     if ($LASTEXITCODE) { throw 'PoB addon compatibility/install check failed.' }
     $integrationInstalled = $true
-    $session = Get-Content -Raw -LiteralPath $sessionFile | ConvertFrom-Json
+    $session = Get-Content -Encoding UTF8 -Raw -LiteralPath $sessionFile | ConvertFrom-Json
     Remove-Item -LiteralPath (Join-Path $session.runtime 'shutdown.json') -Force -ErrorAction SilentlyContinue
     $entry = @{version=$manifest.version;release=$stage;releaseName=$releaseName;session=$sessionFile;previous=$old.release;previousName=$old.releaseName;repository='arthurhpabreu/poe-assistant';direct=$true}
     foreach ($name in @('Launch','Update','Uninstall','Rollback','Common')) {
@@ -118,7 +118,13 @@ try {
         & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Install
         if (-not $?) { throw 'Could not integrate the existing PoB shortcut.' }
         $linksChanged = $true
+        $activeLinks = Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $data 'active-shortcuts.json') | ConvertFrom-Json
+        $verifiedShortcut = @($activeLinks | Select-Object -First 1)[0]
+        if (-not $verifiedShortcut) { throw 'No existing PoB shortcut is available for native verification.' }
+        & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination -Shortcut $verifiedShortcut
         & (Join-Path $stage 'scripts/integrate-shortcuts.ps1') @linkArgs -Mode Cleanup
+    } else {
+        & (Join-Path $stage 'scripts/verify-native.ps1') -Pob $Pob -Destination $Destination
     }
     Write-Output ('Installed PoE Assistant ' + $manifest.version + '. Open your usual Path of Building shortcut.')
 } catch {
@@ -136,7 +142,7 @@ try {
                 $helper = Join-Path $old.release ('scripts/installed-' + $name.ToLowerInvariant() + '.ps1')
                 if (Test-Path -LiteralPath $helper) { Copy-Item -LiteralPath $helper -Destination (Join-Path $Destination ($name + '.ps1')) -Force }
             }
-            $restoredSession = Get-Content -Raw -LiteralPath $sessionFile | ConvertFrom-Json
+            $restoredSession = Get-Content -Encoding UTF8 -Raw -LiteralPath $sessionFile | ConvertFrom-Json
             Remove-Item -LiteralPath (Join-Path $restoredSession.runtime 'shutdown.json') -Force -ErrorAction SilentlyContinue
             & (Join-Path $old.release 'scripts/start-backend.ps1') -Session $sessionFile
         }

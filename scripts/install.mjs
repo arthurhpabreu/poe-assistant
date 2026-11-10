@@ -43,6 +43,7 @@ PLoadModule = function(name, ...)
   local ok, failure = pcall(function()
    assert(type(main.Init) == "function" and type(main.OnFrame) == "function", "Unsupported PoB API")
    local config = require("dkjson").decode(${JSON.stringify(JSON.stringify(config))})
+   config.launchProcess = assert(loadfile(${literal(path.join(root, 'addon/WindowsProcess.lua'))}))()
    local attach = assert(loadfile(${literal(path.join(root, 'addon/PobHelper.lua'))}))()
    attach(main, config)
   end)
@@ -57,52 +58,23 @@ assert(loadfile(${literal(path.join(session.install, 'Launch.lua'))}))()
 // resolved on this machine, so the installed folder contains no developer path.
 export function managedBootstrap(relative = 'PoEAssistant') {
   return `#@ SimpleGraphic
--- PoE Assistant managed entry point. No official PoB files are changed.
-local base = GetScriptPath():gsub('\\\\', '/'):gsub('/$', '')
-local destination = base .. '/' .. ${JSON.stringify(relative)}
-local json = require('dkjson')
-local function read(path)
- local file = assert(io.open(path, 'rb')); local value = json.decode(file:read('*a')); file:close(); return assert(value)
-end
-local ok, failure = pcall(function()
- local current = read(destination .. '/current.json')
- assert(current.repository == 'arthurhpabreu/poe-assistant', 'Unexpected addon identity')
- assert(type(current.releaseName) == 'string' and current.releaseName:match('^[%w%.%-]+$'), 'Invalid addon release')
- local config = read(destination .. '/data/session.json')
- config.install = base; config.destination = destination
- config.root = destination .. '/releases/' .. current.releaseName
- config.state = destination .. '/data'; config.runtime = config.state .. '/sessions/' .. config.id
- config.node = config.root .. '/runtime/node.exe'; config.launcher = base .. '/PoEAssistant.lua'
- config.startScript = config.root .. '/scripts/start-backend.ps1'; config.sessionFile = config.state .. '/session.json'
- local stored = assert(io.open(config.sessionFile, 'wb')); stored:write(json.encode(config)); stored:close()
- local original = PLoadModule
- PLoadModule = function(name, ...)
-  if name ~= 'Modules/Main' then return original(name, ...) end
-  local err, main = original(name, ...); PLoadModule = original
-  if not err and main then
-   local attached, problem = pcall(function() assert(loadfile(config.root .. '/addon/PobHelper.lua'))()(main, config) end)
-   if not attached then ConPrintf('PoE Assistant disabled: %s', tostring(problem)) end
-  end
-  return err, main
- end
+-- PoE Assistant managed entry point. Official PoB files remain unchanged.
+local destination = ${JSON.stringify(relative)}
+local ok, controller = pcall(function()
+ SetWorkDir(GetScriptPath())
+ return assert(loadfile(destination .. '/Bootstrap.lua'))()(destination)
 end)
-if not ok then ConPrintf('PoE Assistant could not start: %s. Run setup again to repair it.', tostring(failure)) end
-assert(loadfile(base .. '/Launch.lua'))()
--- Normal Restart() retains this entry. Basic updates use a separate runtime;
--- redirect only the exact known update command to our own untracked wrapper.
-local officialApply = launch.ApplyUpdate
-launch.ApplyUpdate = function(self, mode)
- local originalSpawn = SpawnProcess
- SpawnProcess = function(target, arguments, ...)
-  local expected = (GetRuntimePath() .. '/Update'):gsub('\\\\', '/'):lower()
-  if target:gsub('\\\\', '/'):lower() == expected and arguments == 'UpdateApply.lua Update/opFileRuntime.txt' then
-   arguments = 'PoEAssistantUpdate.lua Update/opFileRuntime.txt'
-  end
-  return originalSpawn(target, arguments, ...)
+assert(loadfile('Launch.lua'))()
+if ok then controller.configureLaunch(launch) else
+ local failure = tostring(controller)
+ local log = io.open(destination .. '/startup-error.log', 'wb')
+ if log then log:write(failure); log:close() end
+ local init = launch.OnInit
+ launch.OnInit = function(self, ...)
+  if os.getenv('POE_ASSISTANT_PROBE') then Exit(); return end
+  init(self, ...)
+  self:ShowPrompt(1, 0.5, 0.2, 'PoE Assistant could not start:\\n' .. failure .. '\\n\\nRun setup again. Details: ' .. destination .. '/startup-error.log')
  end
- local result, problem = pcall(officialApply, self, mode)
- SpawnProcess = originalSpawn
- if not result then error(problem) end
 end
 `;
 }
@@ -174,7 +146,10 @@ async function install() {
   await atomicWrite(sessionPath, session);
   await fs.rm(path.join(session.runtime, 'uninstalled.json'), { force: true });
   await atomicWrite(session.launcher, bootstrap(session));
-  if (direct) await atomicWrite(path.join(install, 'PoEAssistantUpdate.lua'), updateBootstrap(install));
+  if (direct) {
+    await atomicWrite(path.join(destination, 'Bootstrap.lua'), await fs.readFile(path.join(root, 'addon/Bootstrap.lua'), 'utf8'));
+    await atomicWrite(path.join(install, 'PoEAssistantUpdate.lua'), updateBootstrap(install));
+  }
   if (!direct && !process.argv.includes('--no-shortcut')) await shortcut(session);
   await atomicWrite(sessionPath, session);
   console.log(`PoE Assistant installed. Session ${id}\nPoB: ${install}\nOpen your usual Path of Building shortcut. F8 collapses the panel.`);

@@ -16,12 +16,38 @@ official `UpdateApply.lua` and restores the addon argument only for the exact
 PoB executable restart. Future incompatible runtime APIs may require an addon
 update. Direct double-clicking the executable bypasses shortcut integration.
 
+The managed entry loads `PoEAssistant/Bootstrap.lua` using paths relative to
+the native script directory. It does not rewrite session configuration from
+Lua. This avoids ANSI/UTF-8 path mismatches in Lua's Windows CRT. The Node
+launcher resolves absolute UTF-8 paths and writes updated metadata atomically.
+Windows shortcuts use Unicode `IShellLinkW`/`IPersistFile` interfaces rather
+than `WScript.Shell`; PowerShell metadata reads explicitly specify UTF-8.
+
 The Windows installer stores releases and persistent data under
 `<PoB>/PoEAssistant`. It validates package/file SHA256 hashes, serializes setup
 per PoB installation, waits for the old backend to stop, health-checks the new
 release, then integrates shortcuts. Failed activation restores the prior
 release. Old addon links are backed up before removal. Builds and native PoB
 settings are never copied or overwritten. The installer is currently unsigned.
+
+Before accepting setup, `verify-native.ps1` starts an installer-owned PoB through
+an integrated shortcut. A per-process nonce selects isolated settings/build
+directories and a separate bridge. A receipt is accepted only after controls
+initialize and a frame draws, with matching nonce, process ID, release and
+installation path. The native panel must cold-start its isolated bundled Node
+backend and read its response over the file bridge. Node health alone is insufficient. Failed native activation
+rejects setup and restores the previous release. The probe closes only its own
+process; it does not open/save user builds or launch a provider.
+
+Normal native startup calls bundled Node with `src/launch-backend.mjs` directly,
+without a shell or PowerShell execution-policy dependency. A Unicode
+`CreateProcessW` call starts it hidden, with no elevation retry. Calculator
+workers likewise use direct process creation and relative Lua paths. The launcher handles
+owned shutdown markers, healthy backends, log redirection and startup errors.
+No global execution policy or provider environment is changed. Failures before
+attachment produce a dismissible PoB notice and `startup-error.log`; native
+initialization/frame failures write `startup.json`. Small windows display an
+explicit PoE Assistant badge with maximize instructions.
 
 Settings and recovery data from recognized earlier managed installations are
 migrated automatically. Old installation directories remain available as

@@ -80,7 +80,7 @@ class Installer {
                     throw new Exception(error.Length>0 ? error : output.Length>0 ? output : "Installation failed. No successful activation was confirmed.");
                 }
             }
-            if(!silent) MessageBox.Show("Installed inside PoB Fork.\n\nOpen your usual Path of Building shortcut. The assistant appears on the right.\nPrevious addon shortcuts have been removed.","PoE Assistant");
+            if(!silent) MessageBox.Show("Installed and verified in your PoB Fork.\n\nSetup opened an isolated PoB check and confirmed the assistant rendered.\nOpen your usual Path of Building shortcut. Maximize PoB to see the full chat.","PoE Assistant");
             return 0;
         } catch(Exception error) {
             string log=Path.Combine(Path.GetTempPath(),"PoEAssistant-setup-error-"+Guid.NewGuid().ToString("N")+".txt");

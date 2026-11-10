@@ -20,6 +20,9 @@ jobs:
       - run: npm test
       - run: npm run check
       - run: npm run package:windows
+      - name: Verify clean Windows and native PoB startup
+        shell: pwsh
+        run: ./scripts/verify-clean-windows.ps1
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh

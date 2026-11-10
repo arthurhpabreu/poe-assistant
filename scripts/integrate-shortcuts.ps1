@@ -2,8 +2,8 @@ param([Parameter(Mandatory=$true)][string]$Pob, [string]$Launcher, [Parameter(Ma
 $ErrorActionPreference = 'Stop'
 $Pob = [IO.Path]::GetFullPath($Pob).TrimEnd('\')
 $executable = Join-Path $Pob 'Path of Building.exe'
-$shell = New-Object -ComObject WScript.Shell
-if (-not $Roots) { $Roots = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'), (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')) }
+. (Join-Path $PSScriptRoot 'shortcut-api.ps1')
+if (-not $Roots) { $Roots = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'), (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')) }
 function CanonicalPath($value) {
     $full = [IO.Path]::GetFullPath($value).TrimEnd('\')
     $missing = @(); $ancestor = $full
@@ -33,11 +33,11 @@ function SaveRecords($value) {
     Move-Item -LiteralPath $temporary -Destination $Records -Force
 }
 $previous = @()
-if (Test-Path -LiteralPath $Records) { $previous = Get-Content -Raw -LiteralPath $Records | ConvertFrom-Json }
+if (Test-Path -LiteralPath $Records) { $previous = Get-Content -Encoding UTF8 -Raw -LiteralPath $Records | ConvertFrom-Json }
 if ($Mode -eq 'Restore') {
     foreach ($entry in $previous) {
         if (-not (Test-Path -LiteralPath $entry.file)) { continue }
-        $link = $shell.CreateShortcut($entry.file)
+        $link = [PoeAssistantShortcut]::Open($entry.file)
         if ((EqualPath $link.TargetPath $entry.target) -and (SameArguments $link.Arguments $entry.installedArguments)) {
             $link.Arguments = $entry.arguments; $link.WorkingDirectory = $entry.workingDirectory; $link.Save()
         }
@@ -50,13 +50,13 @@ foreach ($folder in $Roots) {
     $recurse = $folder -in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'))
     foreach ($file in Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -Recurse:$recurse -ErrorAction SilentlyContinue) {
         if ($visited.ContainsKey($file.FullName)) { continue }; $visited[$file.FullName] = $true
-        $link = $shell.CreateShortcut($file.FullName)
+        $link = [PoeAssistantShortcut]::Open($file.FullName)
         $legacy = $false; $legacyDestination = $null; $eligible = $false
         if (EqualPath $link.TargetPath $executable) {
             $argument = ArgumentPath $link.Arguments.Trim()
             $argumentPath = if (-not $argument) { $null } elseif ([IO.Path]::IsPathRooted($argument)) { $argument } else { Join-Path $Pob $argument }
             if ($argumentPath -and $file.BaseName -match '^PoB Helper(?: [\w-]+)?$' -and [IO.Path]::GetFileName($argumentPath) -like 'PobHelperLaunch-*.lua' -and (EqualPath (Split-Path -Parent $argumentPath) $Pob) -and (Test-Path -LiteralPath $argumentPath)) {
-                $source = Get-Content -Raw -LiteralPath $argumentPath
+                $source = Get-Content -Encoding UTF8 -Raw -LiteralPath $argumentPath
                 $legacy = $source -match 'PoB Helper' -and $source -match 'Session: pobhelper-[\w-]+'
             }
             $eligible = -not $legacy -and (-not $link.Arguments.Trim() -or (EqualPath $argumentPath (Join-Path $Pob 'Launch.lua')) -or ($Launcher -and (EqualPath $argumentPath $Launcher)))
@@ -65,8 +65,8 @@ foreach ($folder in $Roots) {
             $pointer = Join-Path $candidate 'current.json'
             if (Test-Path -LiteralPath $pointer) {
                 try {
-                    $current = Get-Content -Raw -LiteralPath $pointer | ConvertFrom-Json
-                    $session = Get-Content -Raw -LiteralPath $current.session | ConvertFrom-Json
+                    $current = Get-Content -Encoding UTF8 -Raw -LiteralPath $pointer | ConvertFrom-Json
+                    $session = Get-Content -Encoding UTF8 -Raw -LiteralPath $current.session | ConvertFrom-Json
                     if ($current.repository -in @('arthurhpabreu/poe-assistant','autis-analytics/poe-assistant') -and (EqualPath $session.install $Pob)) { $legacy = $true; $legacyDestination = $candidate }
                 } catch { }
             }
@@ -95,15 +95,15 @@ if (-not @($links | Where-Object eligible).Count) {
     if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { throw 'No shortcut destination is available.' }
     $file = Join-Path $folder 'Path of Building Community.lnk'
     if (Test-Path -LiteralPath $file) { throw 'The standard shortcut belongs to another installation. Select this PoB using its existing shortcut or repair that shortcut first.' }
-    $link = $shell.CreateShortcut($file); $link.TargetPath = $executable; $link.WorkingDirectory = $Pob; $link.IconLocation = $executable + ',0'; $link.Save()
+    $link = [PoeAssistantShortcut]::Open($file); $link.TargetPath = $executable; $link.WorkingDirectory = $Pob; $link.IconLocation = $executable + ',0'; $link.Save()
     $links += [pscustomobject]@{file=$file;target=$executable;arguments='';workingDirectory=$Pob;eligible=$true;legacy=$false}
 }
 $changed = @(); foreach ($record in $previous) { $changed += $record }; $errors = @(); $integrated = 0
-$mutations = @()
+$mutations = @(); $active = @()
 try {
     foreach ($entry in $links | Where-Object eligible) {
         $installed = '"' + $Launcher + '"'
-        if (SameArguments $entry.arguments $installed) { $integrated++; continue }
+        if (SameArguments $entry.arguments $installed) { $integrated++; $active += $entry.file; continue }
         if (-not @($changed | Where-Object file -EQ $entry.file).Count) {
             $changed += [pscustomobject]@{file=$entry.file;target=$entry.target;arguments=$entry.arguments;workingDirectory=$entry.workingDirectory;installedArguments=$installed}
             # Persist the original before touching the user's existing shortcut.
@@ -111,16 +111,21 @@ try {
         }
         try {
             $mutations += [pscustomobject]@{file=$entry.file;target=$entry.target;arguments=$entry.arguments;workingDirectory=$entry.workingDirectory;installedArguments=$installed}
-            $link = $shell.CreateShortcut($entry.file); $link.Arguments = $installed; $link.WorkingDirectory = $Pob; $link.Save(); $integrated++
+            $link = [PoeAssistantShortcut]::Open($entry.file); $link.Arguments = $installed; $link.WorkingDirectory = $Pob; $link.Save()
+            $saved = [PoeAssistantShortcut]::Open($entry.file)
+            if (-not (EqualPath $saved.TargetPath $executable) -or -not (SameArguments $saved.Arguments $installed)) { throw 'Windows did not retain the addon startup argument.' }
+            $integrated++; $active += $entry.file
         }
         catch { $errors += $_.Exception.Message }
     }
     if (-not $integrated) { throw ('No writable standard PoB shortcut was found. Create a normal shortcut to Path of Building.exe, then run setup again. ' + ($errors -join ' ')) }
+    if ($errors.Count) { throw ('Some PoB shortcuts could not be updated. Setup cannot confirm that they will load the assistant: ' + ($errors -join '; ')) }
     SaveRecords $changed
+    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $Records) 'active-shortcuts.json'), (ConvertTo-Json -InputObject @($active)), (New-Object Text.UTF8Encoding($false)))
     Write-Output ('Integrated with ' + $integrated + ' existing PoB shortcut(s). No extra shortcuts were created.')
 } catch {
     foreach ($entry in $mutations) {
-        if (Test-Path -LiteralPath $entry.file) { $link = $shell.CreateShortcut($entry.file); if ((SameArguments $link.Arguments $entry.installedArguments) -and (EqualPath $link.TargetPath $entry.target)) { $link.Arguments = $entry.arguments; $link.WorkingDirectory = $entry.workingDirectory; $link.Save() } }
+        if (Test-Path -LiteralPath $entry.file) { $link = [PoeAssistantShortcut]::Open($entry.file); if ((SameArguments $link.Arguments $entry.installedArguments) -and (EqualPath $link.TargetPath $entry.target)) { $link.Arguments = $entry.arguments; $link.WorkingDirectory = $entry.workingDirectory; $link.Save() } }
     }
     throw
 }

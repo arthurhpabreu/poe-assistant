@@ -18,6 +18,8 @@ await fs.copyFile(process.execPath,path.join(stage,'runtime','node.exe'));
 const license=await fetch(`https://raw.githubusercontent.com/nodejs/node/${process.version}/LICENSE`);
 if (!license.ok) throw Error('Could not obtain the bundled Node runtime license.');
 await fs.writeFile(path.join(stage,'runtime','LICENSE-node.txt'),await license.text());
+const compiler=path.join(process.env.WINDIR,'Microsoft.NET','Framework64','v4.0.30319','csc.exe');
+await runProcess(compiler,['/nologo','/target:library',`/out:${path.join(stage,'runtime','WindowsShortcut.dll')}`,path.join(root,'scripts/WindowsShortcut.cs')],{cwd:root,timeoutMs:60000});
 const entries=await fs.readdir(stage,{recursive:true,withFileTypes:true});
 const files=[];
 for(const entry of entries.filter(e=>e.isFile())) {
@@ -29,7 +31,6 @@ await atomicWrite(path.join(stage,'release-manifest.json'),{repository:'arthurhp
 const archive=path.join(dist,`poe-assistant-${pkg.version}-win-x64.zip`);
 await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(root,'scripts/compress-package.ps1'),'-Source',stage,'-Destination',archive],{cwd:root,timeoutMs:180000});
 const executable=path.join(dist,`PoE-Assistant-Setup-${pkg.version}.exe`);
-const compiler=path.join(process.env.WINDIR,'Microsoft.NET','Framework64','v4.0.30319','csc.exe');
 await runProcess(compiler,['/nologo','/target:winexe','/platform:x64',`/out:${executable}`,`/resource:${archive},Payload.zip`,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll',path.join(root,'scripts','Installer.cs')],{cwd:root,timeoutMs:180000});
 await atomicWrite(path.join(dist,'SHA256SUMS.json'),{repository:'arthurhpabreu/poe-assistant',version:pkg.version,files:[archive,executable].map(file=>({name:path.basename(file),sha256:null}))});
 const sums=JSON.parse(await fs.readFile(path.join(dist,'SHA256SUMS.json'),'utf8'));

@@ -2,7 +2,8 @@
 -- No generated Lua or shell code is accepted from the model.
 return function(main, config)
   local json = require('dkjson')
-  local lab = config.root and assert(loadfile(config.root:gsub('\\', '/') .. '/addon/BuildLab.lua'))()
+  local labRoot = config.luaRoot or config.root
+  local lab = labRoot and assert(loadfile(labRoot:gsub('\\', '/') .. '/addon/BuildLab.lua'))()
   local runtime = config.runtime:gsub('\\', '/')
   local instance = tostring(os.time()) .. '-' .. tostring({}):gsub('[^%w]', '')
   local originalInit, originalFrame = main.Init, main.OnFrame
@@ -12,6 +13,23 @@ return function(main, config)
   local host, width, x, height, advanced, collapsed, disabled, buildKey
   local lastText, lastWrapWidth, handledCommand, pendingAck, applying, transaction
   local pendingAction, localError
+  local reportedReady, reportedConnected, startupFailed
+  local startupCheckedAt = -1000
+  local instanceStartedAt = os.time() * 1000
+  local function reportStartup(stage, details)
+    if stage == 'failed' then startupFailed = true end
+    if config.reportStartup and not (stage == 'ready' and startupFailed) then config.reportStartup(stage, details) end
+  end
+  local function startBackend()
+    if config.probe and not config.probe.startBackend then return end
+    local entry = config.backendEntry or (config.root and config.root:gsub('\\', '/') .. '/src/launch-backend.mjs')
+    if config.node and entry then
+      assert(config.launchProcess, 'The native assistant launcher is missing. Run setup again.')(config.node, '"' .. entry .. '" --session "' .. config.sessionFile .. '"')
+    else
+      -- Source-only compatibility; managed installations always use bundled Node.
+      os.execute('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' .. config.startScript .. '" -Session "' .. config.sessionFile .. '"')
+    end
+  end
   local snapshot
   local cards, showDetails = {}, false
   local panelWidth, resizing
@@ -37,6 +55,20 @@ return function(main, config)
     f:write(type(object) == 'string' and object or json.encode(object)); f:close()
     os.remove(name)
     assert(os.rename(name .. '.tmp', name))
+  end
+  local function confirmStartup(panel, fullWidth, fullHeight)
+    local details = { instanceId = instance, width = fullWidth, height = fullHeight, panel = panel }
+    if not reportedReady then reportStartup('rendered', details); reportedReady = true end
+    if not reportedConnected then
+      if GetTime() - startupCheckedAt < 450 then return end
+      startupCheckedAt = GetTime()
+      local beat, response = read('heartbeat.json'), read('ui.json')
+      local sameBuild = not lastSnapshot or lastSnapshot.mode ~= 'BUILD' or response and response.buildKey == buildKey
+      if beat and beat.sessionId == config.id and os.time() * 1000 - (beat.time or 0) < 12000 and response and response.sessionId == config.id and sameBuild then
+        details.backendConnected = true; reportStartup('ready', details); reportedConnected = true
+        config.probeFinished = config.probe ~= nil
+      end
+    end
   end
   local function request(kind, data)
     if pendingAction and kind ~= 'cancel' then return end
@@ -447,7 +479,7 @@ return function(main, config)
   main.Init = function(self, ...)
     originalInit(self, ...)
     local ready, initError = pcall(initializeControls)
-    if not ready then host = nil; ConPrintf('PoB Helper disabled: %s', tostring(initError)); return end
+    if not ready then host = nil; reportStartup('failed', { error = tostring(initError) }); ConPrintf('PoB Helper disabled: %s', tostring(initError)); return end
     buildKey = instance .. '-0'
     local build = self.modes.BUILD
     local initBuild = build.Init
@@ -459,8 +491,8 @@ return function(main, config)
     if other and other.instanceId ~= instance and os.time() * 1000 - (other.timestamp or 0) < 12000 then
       disabled = 'PoB Helper is connected to another PoB window.'
     else
-      -- Fixed installer-created script; never constructed from model output.
-      os.execute('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -File "' .. config.startScript .. '" -Session "' .. config.sessionFile .. '"')
+      local started, problem = pcall(startBackend)
+      if not started then localError = tostring(problem); reportStartup('failed', { error = localError }) end
     end
   end
   main.OnKeyDown = function(self, key, doubleClick)
@@ -492,9 +524,13 @@ return function(main, config)
           heartbeatAt = GetTime()
           local heartbeat = read('heartbeat.json')
           if not heartbeat or os.time() * 1000 - (heartbeat.time or 0) > 12000 then
-            os.execute('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -File "' .. config.startScript .. '" -Session "' .. config.sessionFile .. '"')
+            local started, problem = pcall(startBackend)
+            if not started then localError = tostring(problem); reportStartup('failed', { error = localError }) end
           end
         end
+        local startupError = read('backend-start-error.json')
+        local connected = read('heartbeat.json')
+        if startupError and (startupError.time or 0) >= instanceStartedAt - 1000 and (not connected or os.time() * 1000 - (connected.time or 0) > 12000) then localError = 'Assistant startup failed: ' .. tostring(startupError.error) .. ' Run setup again to repair it.' end
         if GetTime() - lastSnapshotAt > 1200 then snapshot() end
         processCommand()
       end
@@ -527,13 +563,14 @@ return function(main, config)
     local isCollapsed = collapsed or narrow
     width = math.min(fullWidth - 420, math.max(380, panelWidth or math.min(600, math.floor(fullWidth * 0.36))))
     if fullWidth < 980 then width = math.max(320, fullWidth - 620) end
-    x = isCollapsed and fullWidth - 108 or fullWidth - width
+    local badgeWidth, badgeHeight = math.min(fullWidth, 218), 66
+    x = isCollapsed and fullWidth - badgeWidth or fullWidth - width
     local ok, errorMessage = pcall(panelFrame)
     if not ok then ui.status = 'Integration error: ' .. tostring(errorMessage) end
-    local view = { x = x, y = 0, width = isCollapsed and 108 or width, height = isCollapsed and 44 or height }
+    local view = { x = x, y = 0, width = isCollapsed and badgeWidth or width, height = isCollapsed and badgeHeight or height }
     local cx, cy = GetCursorPos()
     local divider = not isCollapsed and math.abs(cx - x) <= 7
-    local inPanel = (cx >= x or divider or resizing) and (not isCollapsed or cy <= 44)
+    local inPanel = (cx >= x or divider or resizing) and (not isCollapsed or cy <= badgeHeight)
     if isCollapsed then host:SelectControl() end
     local events, remaining = {}, {}
     if not self.popups[1] then
@@ -581,8 +618,8 @@ return function(main, config)
       end
     end
     SetDrawLayer(90); SetViewport()
-    SetDrawColor(0.035, 0.045, 0.06); DrawImage(nil, x, 0, fullWidth - x, isCollapsed and 44 or height)
-    SetDrawColor(0.45, 0.34, 0.18); DrawImage(nil, x, 0, 1, isCollapsed and 44 or height)
+    SetDrawColor(0.035, 0.045, 0.06); DrawImage(nil, x, 0, fullWidth - x, isCollapsed and badgeHeight or height)
+    SetDrawColor(0.45, 0.34, 0.18); DrawImage(nil, x, 0, 1, isCollapsed and badgeHeight or height)
     if not isCollapsed then
       SetDrawColor((divider or resizing) and 0.9 or 0.45, 0.55, 0.28)
       DrawImage(nil, x + 2, math.floor(height / 2) - 20, 2, 40)
@@ -590,8 +627,11 @@ return function(main, config)
     end
     if isCollapsed then
       for name, control in pairs(host.controls) do control.shown = name == 'toggle' end
-      host.controls.toggle.x = x + 8; host.controls.toggle.width = 92; host.controls.toggle.label = narrow and 'AI (resize)' or 'AI  [F8]'
-      host:DrawControls(view); SetDrawLayer(0); return
+      host.controls.toggle.x = x + 8; host.controls.toggle.width = badgeWidth - 16; host.controls.toggle.label = 'PoE Assistant [F8]'
+      SetDrawColor(0.75, 0.81, 0.85); DrawString(x + 10, 40, 'LEFT', 13, 'VAR', narrow and 'Maximize PoB to open chat' or 'Click to open chat')
+      host:DrawControls(view)
+      confirmStartup('compact', fullWidth, fullHeight)
+      SetDrawLayer(0); return
     end
     SetDrawColor(0.93, 0.81, 0.57); DrawString(x + 18, 14, 'LEFT', 22, 'VAR', 'PoB Assistant')
     SetDrawColor(0.4, 0.76, 0.65); DrawString(fullWidth - 166, 20, 'LEFT', 13, 'VAR', ui.settings.access == 'pob' and 'PoB tools only' or 'Full local access')
@@ -670,6 +710,7 @@ return function(main, config)
       DrawString(x + 14, 544, 'LEFT', 14, 'VAR', authText)
     end
     host:DrawControls(view)
+    confirmStartup('expanded', fullWidth, fullHeight)
     if self.popups[1] then SetDrawColor(0, 0, 0, 0.6); DrawImage(nil, x, 0, width, height) end
     SetDrawLayer(0)
   end
@@ -679,6 +720,8 @@ return function(main, config)
     if not ok then
       host = nil
       pcall(write, 'addon-error.log', tostring(failure))
+      pcall(reportStartup, 'failed', { error = tostring(failure) })
+      if launch.ShowPrompt then launch:ShowPrompt(1, 0.5, 0.2, 'PoE Assistant stopped: ' .. tostring(failure) .. '\nRun setup again. See PoEAssistant/startup.json.') end
       ConPrintf('PoB Helper disabled: %s', tostring(failure))
     end
   end

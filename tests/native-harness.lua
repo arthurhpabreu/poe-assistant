@@ -19,7 +19,9 @@ io.open = function(name, mode)
 end
 os.rename = function(a,b) memory[b] = memory[a]; memory[a] = nil; return true end
 os.remove = function(a) memory[a] = nil; return true end
-os.execute = function() return 0 end
+os.execute = function() error('Managed startup must not depend on PowerShell') end
+local backendStarts, startup = {}, {}
+SpawnProcess = function(executable, arguments) backendStarts[#backendStarts+1]={executable,arguments} end
 os.time = function() return 1000 end
 local now = 2000
 GetTime = function() return now end
@@ -56,8 +58,10 @@ build.Shutdown = function(self) self.savers = nil end
 build.Init = function(self,_,_,xml) self.state = xml; self.savers = {}; self.failFrame = xml == 'candidate'; self.targetVersion = '3_0' end
 local frames = 0
 local main = { modes = { BUILD = build }, mode='BUILD', inputEvents={}, popups={}, Init=function() end, OnKeyDown=function() end, OnKeyUp=function() end, OnFrame=function() frames=frames+1; if build.failFrame then error('synthetic calculation failure') end end }
-addon(main, { id='test-session', runtime='/runtime', startScript='fixed.ps1', sessionFile='fixed.json' })
+addon(main, { id='test-session', runtime='/runtime', node='bundled-node.exe', backendEntry='fixed.mjs', sessionFile='fixed.json', launchProcess=SpawnProcess, reportStartup=function(stage,details) startup[#startup+1]={stage=stage,details=details} end })
 main:Init(); main:OnFrame()
+assert(backendStarts[1][1]=='bundled-node.exe' and backendStarts[1][2]=='"fixed.mjs" --session "fixed.json"', 'Managed startup did not invoke bundled Node directly')
+assert(startup[1].stage=='rendered' and startup[1].details.panel=='expanded', 'Rendering was not confirmed independently of backend readiness')
 memory['/runtime/ui.json'] = encode({ sessionId='test-session', messages={{role='user',text='Help me'},{role='assistant',text='### Build result\n- **Life:** 60\n\nA readable answer.'}}, settings={provider='codex',model='codex-test'}, models={codex={{id='codex-test',label='Codex test'}},claude={{id='sonnet',label='Sonnet'}}} })
 now = now + 500; main:OnFrame()
 local c = controlHost.controls
@@ -124,4 +128,7 @@ assert(receipt.result.applied and build.state == 'accepted', 'successful applica
 local committedRevision = receipt.result.committedRevision
 build.state = 'manually edited'; now = now + 1500; main:OnFrame()
 assert(decodeFile('receipts/apply-success.json').result.committedRevision == committedRevision, 'a later manual edit changed the immutable receipt')
+GetVirtualScreenSize=function() return 850,500 end
+main:OnFrame()
+assert(c.toggle.label=='PoE Assistant [F8]' and table.concat(drawn,'\n'):find('Maximize PoB to open chat'), 'Small-window installation badge is not discoverable')
 return true

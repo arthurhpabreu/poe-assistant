@@ -48,6 +48,12 @@ installer updates an existing installation and migrates recognized older addon
 settings/recovery data automatically. **Settings → Check addon updates** shows
 the latest release. Save/close PoB and run the new installer to update.
 
+Setup opens an isolated check through the integrated PoB shortcut and only
+reports success after the native assistant renders a frame and connects to its
+own freshly started backend. The check uses
+temporary settings and does not open your saved builds. Startup errors are
+shown in setup instead of leaving an apparently successful installation.
+
 > **On another PC:** install PoB and your chosen CLI there, then run this
 > installer and sign in there. Copying old Windows shortcuts does not install
 > the addon or its provider. This is a Windows x64 community addon; the current
@@ -103,7 +109,7 @@ backups stay under the addon's `data` folder.
 
 | Symptom | What to do |
 | --- | --- |
-| Panel missing | Open the usual PoB shortcut that setup integrated. Running the executable directly bypasses it. Run setup again after moving PoB or recreating shortcuts. |
+| Panel missing | Run the latest installer: it verifies the actual PoB window. Use its integrated shortcut; direct executable launches bypass it. In a small window, the visible “PoE Assistant” badge asks you to maximize PoB. |
 | CLI not found | Install Codex CLI or Claude Code on this PC; restart PoB. Settings accepts an explicit `.exe` or `.js` entry if auto-detection cannot find it. |
 | Login required | Use Settings → Sign in, complete your provider's login, then Check login. |
 | Setup asks to close PoB | Save your build and close that PoB installation, then rerun setup. Other installations are left alone. |
@@ -112,6 +118,12 @@ backups stay under the addon's `data` folder.
 For a bug report, include addon/PoB/Windows versions and the exact error. Remove
 private build/account details before posting. See [technical documentation](docs/TECHNICAL.md)
 for runtime, updates, validation and diagnostic details.
+
+Normal startup uses bundled Node directly, with no PowerShell script execution
+requirement. Unicode Windows shortcuts and explicit UTF-8 metadata reads support
+user/folder names containing accents. `PoEAssistant/startup.json` records native
+activation; `startup-error.log` records failures before activation. An unsupported
+or blocked installation produces a diagnostic instead of a success message.
 
 To remove the addon, close PoB and run `PoEAssistant\Uninstall.ps1` with
 PowerShell. It restores owned shortcut arguments and leaves PoB, builds and
